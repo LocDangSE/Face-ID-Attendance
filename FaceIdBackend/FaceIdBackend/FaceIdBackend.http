@@ -1,0 +1,6 @@
+@FaceIdBackend_HostAddress = http://localhost:5225
+
+GET {{FaceIdBackend_HostAddress}}/weatherforecast/
+Accept: application/json
+
+###
