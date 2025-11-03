@@ -1,4 +1,5 @@
 using FaceIdBackend.Application.Mappings;
+using Microsoft.Extensions.Options;
 using FaceIdBackend.Application.Services;
 using FaceIdBackend.Application.Services.Interfaces;
 using FaceIdBackend.Infrastructure.Configuration;
@@ -20,8 +21,6 @@ builder.Services.AddDbContext<AttendanceSystemContext>(options =>
 builder.Services.AddScoped<IUnitOfWork, UnitOfWork>();
 
 // Configuration Settings
-builder.Services.Configure<AzureFaceSettings>(
-    builder.Configuration.GetSection("AzureFace"));
 builder.Services.Configure<FileStorageSettings>(
     builder.Configuration.GetSection("FileStorage"));
 builder.Services.Configure<FlaskApiSettings>(
@@ -30,17 +29,26 @@ builder.Services.Configure<SupabaseSettings>(
     builder.Configuration.GetSection("Supabase"));
 
 // Infrastructure Services
-builder.Services.AddScoped<IAzureFaceService, AzureFaceService>();
 builder.Services.AddScoped<FileStorageService>(); // Needed for local fallback
-builder.Services.AddScoped<ISupabaseStorageService, SupabaseStorageService>();
+// Register enhanced Supabase storage implementation
+builder.Services.AddScoped<ISupabaseStorageService, SupabaseStorageServiceEnhanced>();
 builder.Services.AddScoped<IFileStorageService, HybridFileStorageService>();
 
-// Flask Face Recognition Service (Replaces Azure for face recognition)
+// Flask API client (typed) used by application services. Keep existing FlaskFaceRecognitionService registration for backward compatibility.
+builder.Services.AddHttpClient<IFlaskApiClient, FlaskApiClient>()
+    .ConfigureHttpClient((sp, client) =>
+    {
+        var settings = sp.GetRequiredService<IOptions<FlaskApiSettings>>().Value;
+        client.BaseAddress = new Uri(settings.BaseUrl);
+        client.Timeout = TimeSpan.FromSeconds(settings.TimeoutSeconds);
+    });
+
 builder.Services.AddHttpClient<IFlaskFaceRecognitionService, FlaskFaceRecognitionService>();
 
 // Application Services
 builder.Services.AddScoped<IStudentService, StudentService>();
 builder.Services.AddScoped<IClassService, ClassService>();
+builder.Services.AddScoped<ISessionService, SessionService>();
 builder.Services.AddScoped<IAttendanceService, AttendanceService>();
 builder.Services.AddScoped<IDashboardService, DashboardService>();
 
@@ -80,6 +88,11 @@ builder.Services.AddSwaggerGen(c =>
 var app = builder.Build();
 
 // Configure the HTTP request pipeline.
+
+// Add custom middleware
+app.UseMiddleware<FaceIdBackend.Middleware.RequestLoggingMiddleware>();
+app.UseMiddleware<FaceIdBackend.Middleware.ErrorHandlingMiddleware>();
+
 if (app.Environment.IsDevelopment())
 {
     app.UseSwagger();

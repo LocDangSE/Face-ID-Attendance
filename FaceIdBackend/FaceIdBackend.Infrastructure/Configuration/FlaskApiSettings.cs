@@ -2,6 +2,7 @@ namespace FaceIdBackend.Infrastructure.Configuration;
 
 /// <summary>
 /// Configuration settings for Flask Face Recognition API
+/// Enhanced with retry and logging settings
 /// </summary>
 public class FlaskApiSettings
 {
@@ -13,17 +14,41 @@ public class FlaskApiSettings
 
     /// <summary>
     /// Request timeout in seconds
-    /// Default: 30 seconds (face recognition can take time)
+    /// Default: 120 seconds (face recognition can take time for multiple faces)
     /// </summary>
-    public int TimeoutSeconds { get; set; } = 30;
+    public int TimeoutSeconds { get; set; } = 120;
 
     /// <summary>
-    /// Enable health check on startup
+    /// Maximum retry attempts for failed requests
+    /// </summary>
+    public int MaxRetries { get; set; } = 3;
+
+    /// <summary>
+    /// Delay between retries in milliseconds
+    /// </summary>
+    public int RetryDelayMs { get; set; } = 1000;
+
+    /// <summary>
+    /// Enable request logging for debugging
+    /// </summary>
+    public bool LogRequests { get; set; } = true;
+
+    /// <summary>
+    /// Enable response logging for debugging
+    /// </summary>
+    public bool LogResponses { get; set; } = true;
+
+    /// <summary>
+    /// Enable health check on startup (backward compatibility)
     /// </summary>
     public bool EnableHealthCheck { get; set; } = true;
 
     /// <summary>
-    /// Retry count for failed requests
+    /// Legacy RetryCount property for backward compatibility
     /// </summary>
-    public int RetryCount { get; set; } = 3;
+    public int RetryCount
+    {
+        get => MaxRetries;
+        set => MaxRetries = value;
+    }
 }

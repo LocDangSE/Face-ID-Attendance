@@ -65,7 +65,7 @@ public class SupabaseStorageService : ISupabaseStorageService
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "❌ Error uploading file {FileName} to Supabase bucket {Bucket}", fileName, _settings.StorageBucket);
+            _logger.LogError(ex, "❌ Error uploading file {FileName} to Supabase bucket {Bucket}", fileName, _settings.AttendanceSessionsBucket);
             throw;
         }
     }
@@ -81,7 +81,7 @@ public class SupabaseStorageService : ISupabaseStorageService
 
         try
         {
-            _logger.LogInformation("📤 Connecting to Supabase bucket '{Bucket}'...", _settings.StorageBucket);
+            _logger.LogInformation("📤 Connecting to Supabase bucket '{Bucket}'...", _settings.AttendanceSessionsBucket);
             var client = await _supabaseClient.Value;
             var storagePath = string.IsNullOrWhiteSpace(folder) ? fileName : $"{folder}/{fileName}";
 
@@ -89,7 +89,7 @@ public class SupabaseStorageService : ISupabaseStorageService
             try
             {
                 await client.Storage
-                    .From(_settings.StorageBucket)
+                    .From(_settings.AttendanceSessionsBucket)
                     .Remove(new List<string> { storagePath });
                 _logger.LogInformation("🗑️ Removed existing file: {Path}", storagePath);
             }
@@ -101,7 +101,7 @@ public class SupabaseStorageService : ISupabaseStorageService
             // Upload new file
             _logger.LogInformation("⬆️ Uploading file to Supabase: {Path}", storagePath);
             await client.Storage
-                .From(_settings.StorageBucket)
+                .From(_settings.AttendanceSessionsBucket)
                 .Upload(fileData, storagePath, new Supabase.Storage.FileOptions
                 {
                     ContentType = contentType,
@@ -115,7 +115,7 @@ public class SupabaseStorageService : ISupabaseStorageService
         }
         catch (Exception ex)
         {
-            var errorMsg = $"❌ Failed to upload file to Supabase bucket '{_settings.StorageBucket}': {ex.Message}";
+            var errorMsg = $"❌ Failed to upload file to Supabase bucket '{_settings.AttendanceSessionsBucket}': {ex.Message}";
             _logger.LogError(ex, errorMsg);
 
             // Check for common issues
@@ -147,7 +147,7 @@ public class SupabaseStorageService : ISupabaseStorageService
 
             var client = await _supabaseClient.Value;
             await client.Storage
-                .From(_settings.StorageBucket)
+                .From(_settings.AttendanceSessionsBucket)
                 .Remove(new List<string> { storagePath });
 
             _logger.LogInformation("Successfully deleted file from Supabase: {Path}", storagePath);
@@ -173,7 +173,7 @@ public class SupabaseStorageService : ISupabaseStorageService
             return filePath;
         }
 
-        return string.Format(_settings.PublicUrlFormat, _settings.Url, _settings.StorageBucket, filePath);
+        return string.Format(_settings.PublicUrlFormat, _settings.Url, _settings.AttendanceSessionsBucket, filePath);
     }
 
     private string ExtractStoragePath(string urlOrPath)
@@ -192,4 +192,33 @@ public class SupabaseStorageService : ISupabaseStorageService
 
         return urlOrPath;
     }
+
+    #region Session-Based Methods (Not Implemented - Use SupabaseStorageServiceEnhanced)
+
+    public Task<string> CreateSessionFolderAsync(Guid sessionId, DateOnly sessionDate)
+    {
+        throw new NotImplementedException("Use SupabaseStorageServiceEnhanced for session-based functionality");
+    }
+
+    public Task<string> UploadToSessionAsync(Guid sessionId, DateOnly sessionDate, byte[] fileData, string fileName, string subfolder, string contentType = "image/jpeg")
+    {
+        throw new NotImplementedException("Use SupabaseStorageServiceEnhanced for session-based functionality");
+    }
+
+    public Task<byte[]> DownloadFromSessionAsync(Guid sessionId, DateOnly sessionDate, string fileName, string subfolder)
+    {
+        throw new NotImplementedException("Use SupabaseStorageServiceEnhanced for session-based functionality");
+    }
+
+    public Task<List<string>> GetSessionFilesAsync(Guid sessionId, DateOnly sessionDate, string? subfolder = null)
+    {
+        throw new NotImplementedException("Use SupabaseStorageServiceEnhanced for session-based functionality");
+    }
+
+    public Task<bool> DeleteSessionFolderAsync(Guid sessionId, DateOnly sessionDate)
+    {
+        throw new NotImplementedException("Use SupabaseStorageServiceEnhanced for session-based functionality");
+    }
+
+    #endregion
 }

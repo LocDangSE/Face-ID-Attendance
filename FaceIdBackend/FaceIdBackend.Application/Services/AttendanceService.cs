@@ -1,6 +1,7 @@
 using AutoMapper;
 using FaceIdBackend.Application.Services.Interfaces;
 using FaceIdBackend.Domain.Data;
+using FaceIdBackend.Infrastructure.Services;
 using FaceIdBackend.Infrastructure.Services.Interfaces;
 using FaceIdBackend.Infrastructure.UnitOfWork;
 using FaceIdBackend.Shared.DTOs;
@@ -11,22 +12,28 @@ using Microsoft.Extensions.Logging;
 
 namespace FaceIdBackend.Application.Services;
 
+/// <summary>
+/// Refactored AttendanceService using FlaskApiClient and SessionService
+/// </summary>
 public class AttendanceService : IAttendanceService
 {
     private readonly IUnitOfWork _unitOfWork;
     private readonly IMapper _mapper;
-    private readonly IFlaskFaceRecognitionService _flaskFaceService;
+    private readonly IFlaskApiClient _flaskApiClient;
+    private readonly ISessionService _sessionService;
     private readonly ILogger<AttendanceService> _logger;
 
     public AttendanceService(
         IUnitOfWork unitOfWork,
         IMapper mapper,
-        IFlaskFaceRecognitionService flaskFaceService,
+        IFlaskApiClient flaskApiClient,
+        ISessionService sessionService,
         ILogger<AttendanceService> logger)
     {
         _unitOfWork = unitOfWork;
         _mapper = mapper;
-        _flaskFaceService = flaskFaceService;
+        _flaskApiClient = flaskApiClient;
+        _sessionService = sessionService;
         _logger = logger;
     }
 
@@ -53,28 +60,11 @@ public class AttendanceService : IAttendanceService
         if (classEntity == null)
             throw new KeyNotFoundException($"Class with ID {request.ClassId} not found");
 
-        // Check if there's already an active session for this class today
-        var existingSession = await _unitOfWork.AttendanceSessions
-            .FirstOrDefaultAsync(s => s.ClassId == request.ClassId &&
-                                     s.SessionDate == request.SessionDate &&
-                                     s.Status == "InProgress");
-
-        if (existingSession != null)
-            throw new InvalidOperationException($"An active session already exists for this class on {request.SessionDate}");
-
-        var session = new AttendanceSession
-        {
-            SessionId = Guid.NewGuid(),
-            ClassId = request.ClassId,
-            SessionDate = request.SessionDate,
-            SessionStartTime = DateTime.UtcNow,
-            Status = "InProgress",
-            Location = request.Location,
-            CreatedAt = DateTime.UtcNow
-        };
-
-        await _unitOfWork.AttendanceSessions.AddAsync(session);
-        await _unitOfWork.SaveChangesAsync();
+        // Use SessionService to create session with Supabase folder structure
+        var session = await _sessionService.CreateSessionAsync(
+            request.ClassId,
+            request.SessionDate,
+            request.Location);
 
         // Get enrolled students
         var enrolledStudents = classEntity.ClassEnrollments
@@ -159,25 +149,15 @@ public class AttendanceService : IAttendanceService
 
     public async Task<CompleteSessionResponse> CompleteSessionAsync(Guid sessionId)
     {
-        var session = await _unitOfWork.AttendanceSessions.GetByIdAsync(sessionId);
-        if (session == null)
-            throw new KeyNotFoundException($"Session with ID {sessionId} not found");
-
-        if (session.Status != "InProgress")
-            throw new InvalidOperationException("Session is not in progress");
-
-        session.SessionEndTime = DateTime.UtcNow;
-        session.Status = "Completed";
-
-        _unitOfWork.AttendanceSessions.Update(session);
-        await _unitOfWork.SaveChangesAsync();
+        // Use SessionService to complete session
+        await _sessionService.CompleteSessionAsync(sessionId);
 
         // Calculate statistics
         var details = await GetSessionDetailsAsync(sessionId);
 
         return new CompleteSessionResponse
         {
-            SessionId = session.SessionId,
+            SessionId = sessionId,
             TotalStudents = details.TotalEnrolled,
             PresentCount = details.PresentCount,
             AbsentCount = details.AbsentCount,
@@ -245,22 +225,24 @@ public class AttendanceService : IAttendanceService
 
         try
         {
-            // Call Flask API to recognize faces
-            var flaskResult = await _flaskFaceService.RecognizeFaceAsync(session.ClassId, image);
-            _logger.LogInformation("Flask API response - Success: {Success}, Message: {Message}", flaskResult.Success, flaskResult.Message);
+            // Use FlaskApiClient to recognize faces
+            var flaskResult = await _flaskApiClient.AnalyzeFacesAsync(session.ClassId, image);
+            _logger.LogInformation("Flask API response - Success: {Success}, Message: {Message}",
+                flaskResult.Success, flaskResult.Message);
 
-            if (!flaskResult.Success || flaskResult.Data == null)
+            if (!flaskResult.Success)
             {
-                _logger.LogWarning("Flask recognition failed for Session {SessionId}: {Message}", sessionId, flaskResult.Message);
+                _logger.LogWarning("Flask recognition failed for Session {SessionId}: {Message}",
+                    sessionId, flaskResult.Message);
                 return new RecognitionResponse
                 {
                     Success = false,
-                    Message = flaskResult.Message ?? "Face recognition failed",
+                    Message = flaskResult.Message,
                     RecognizedStudents = new List<RecognizedStudentDto>()
                 };
             }
 
-            if (flaskResult.Data.TotalFacesDetected == 0)
+            if (flaskResult.TotalFacesDetected == 0)
             {
                 _logger.LogInformation("No faces detected for Session {SessionId}", sessionId);
                 return new RecognitionResponse
@@ -271,7 +253,7 @@ public class AttendanceService : IAttendanceService
                 };
             }
 
-            if (!flaskResult.Data.RecognizedStudents.Any())
+            if (!flaskResult.RecognizedStudents.Any())
             {
                 _logger.LogInformation("Faces detected but no matches found for Session {SessionId}", sessionId);
                 return new RecognitionResponse
@@ -282,19 +264,19 @@ public class AttendanceService : IAttendanceService
                 };
             }
 
-            _logger.LogInformation("Flask recognized {Count} candidate(s) for Session {SessionId}", flaskResult.Data.RecognizedStudents.Count, sessionId);
+            _logger.LogInformation("Flask recognized {Count} candidate(s) for Session {SessionId}",
+                flaskResult.RecognizedStudents.Count, sessionId);
 
             // Process each recognized student
-            foreach (var recognizedStudent in flaskResult.Data.RecognizedStudents)
+            foreach (var recognizedStudent in flaskResult.RecognizedStudents)
             {
-                // Parse student ID from Flask response
                 if (!Guid.TryParse(recognizedStudent.StudentId, out var studentId))
                 {
-                    _logger.LogWarning("Invalid studentId returned from Flask: {StudentId}", recognizedStudent.StudentId);
+                    _logger.LogWarning("Invalid studentId returned from Flask: {StudentId}",
+                        recognizedStudent.StudentId);
                     continue;
                 }
 
-                // Get student from database
                 var student = await _unitOfWork.Students.GetByIdAsync(studentId);
                 if (student == null)
                 {
@@ -302,7 +284,6 @@ public class AttendanceService : IAttendanceService
                     continue;
                 }
 
-                // Check if student is enrolled in this class
                 var enrollment = await _unitOfWork.ClassEnrollments
                     .FirstOrDefaultAsync(e => e.ClassId == session.ClassId &&
                                              e.StudentId == student.StudentId &&
@@ -310,11 +291,11 @@ public class AttendanceService : IAttendanceService
 
                 if (enrollment == null)
                 {
-                    _logger.LogInformation("Student {StudentId} is not enrolled (active) in Class {ClassId}", student.StudentId, session.ClassId);
+                    _logger.LogInformation("Student {StudentId} is not enrolled in Class {ClassId}",
+                        student.StudentId, session.ClassId);
                     continue;
                 }
 
-                // Check if already marked present
                 var existingRecord = await _unitOfWork.AttendanceRecords
                     .FirstOrDefaultAsync(a => a.SessionId == sessionId && a.StudentId == student.StudentId);
 
@@ -322,8 +303,9 @@ public class AttendanceService : IAttendanceService
 
                 if (isNewRecord)
                 {
-                    _logger.LogInformation("Creating new attendance record: Session {SessionId}, Student {StudentId}", sessionId, student.StudentId);
-                    // Create new attendance record
+                    _logger.LogInformation("Creating new attendance record: Session {SessionId}, Student {StudentId}",
+                        sessionId, student.StudentId);
+
                     var attendanceRecord = new AttendanceRecord
                     {
                         AttendanceId = Guid.NewGuid(),
@@ -340,7 +322,8 @@ public class AttendanceService : IAttendanceService
                 }
                 else
                 {
-                    _logger.LogInformation("Attendance already recorded: Session {SessionId}, Student {StudentId}", sessionId, student.StudentId);
+                    _logger.LogInformation("Attendance already recorded: Session {SessionId}, Student {StudentId}",
+                        sessionId, student.StudentId);
                 }
 
                 recognizedStudents.Add(new RecognizedStudentDto
@@ -354,19 +337,19 @@ public class AttendanceService : IAttendanceService
                 });
             }
 
-            // Save changes to database with explicit error handling
             try
             {
                 var savedCount = await _unitOfWork.SaveChangesAsync();
-                _logger.LogInformation("Successfully saved {SavedCount} attendance record(s) to database for Session {SessionId}", savedCount, sessionId);
+                _logger.LogInformation("Successfully saved {SavedCount} attendance record(s) for Session {SessionId}",
+                    savedCount, sessionId);
             }
             catch (Exception saveEx)
             {
-                _logger.LogError(saveEx, "Failed to save attendance records to database for Session {SessionId}", sessionId);
+                _logger.LogError(saveEx, "Failed to save attendance records for Session {SessionId}", sessionId);
                 return new RecognitionResponse
                 {
                     Success = false,
-                    Message = $"Face recognized but failed to save attendance to database: {saveEx.Message}",
+                    Message = $"Face recognized but failed to save attendance: {saveEx.Message}",
                     RecognizedStudents = new List<RecognizedStudentDto>()
                 };
             }
@@ -384,7 +367,7 @@ public class AttendanceService : IAttendanceService
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Error during face recognition and marking attendance for Session {SessionId}", sessionId);
+            _logger.LogError(ex, "Error during face recognition for Session {SessionId}", sessionId);
             return new RecognitionResponse
             {
                 Success = false,

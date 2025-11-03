@@ -5,7 +5,7 @@
 This guide will help you use the Face Recognition Attendance System effectively. No technical knowledge required!
 
 ---
-1. Activate Visual Environment in Python Server: .\venv\Scripts\Activate.ps1
+1. Activate Visual Environment in Python Server: .\.venv\Scripts\Activate.ps1
 
 ## 📋 Table of Contents
 

@@ -1,6 +1,7 @@
 using AutoMapper;
 using FaceIdBackend.Application.Services.Interfaces;
 using FaceIdBackend.Domain.Data;
+using FaceIdBackend.Infrastructure.Services;
 using FaceIdBackend.Infrastructure.Services.Interfaces;
 using FaceIdBackend.Infrastructure.UnitOfWork;
 using FaceIdBackend.Shared.DTOs;
@@ -15,6 +16,7 @@ public class ClassService : IClassService
     private readonly IUnitOfWork _unitOfWork;
     private readonly IMapper _mapper;
     private readonly IFlaskFaceRecognitionService _flaskFaceService;
+    private readonly IFlaskApiClient _flaskApiClient;
     private readonly IFileStorageService _fileStorage;
     private readonly ILogger<ClassService> _logger;
 
@@ -22,12 +24,14 @@ public class ClassService : IClassService
         IUnitOfWork unitOfWork,
         IMapper mapper,
         IFlaskFaceRecognitionService flaskFaceService,
+        IFlaskApiClient flaskApiClient,
         IFileStorageService fileStorage,
         ILogger<ClassService> logger)
     {
         _unitOfWork = unitOfWork;
         _mapper = mapper;
         _flaskFaceService = flaskFaceService;
+        _flaskApiClient = flaskApiClient;
         _fileStorage = fileStorage;
         _logger = logger;
     }
@@ -205,42 +209,60 @@ public class ClassService : IClassService
                     await _unitOfWork.ClassEnrollments.AddAsync(enrollment);
                 }
 
-                // Collect student image for Flask API batch setup
+                // Collect student image for Flask API registration
                 _logger.LogInformation($"Student {student.StudentNumber} ProfilePhotoUrl: {student.ProfilePhotoUrl ?? "NULL"}");
 
                 if (!string.IsNullOrWhiteSpace(student.ProfilePhotoUrl))
                 {
                     try
                     {
-                        // Convert file path to IFormFile for Flask API
-                        var fileInfo = new FileInfo(student.ProfilePhotoUrl);
-                        _logger.LogInformation($"File exists: {fileInfo.Exists}, Path: {student.ProfilePhotoUrl}");
-
-                        if (fileInfo.Exists)
+                        // Check if URL or local path
+                        if (student.ProfilePhotoUrl.StartsWith("http://", StringComparison.OrdinalIgnoreCase) ||
+                            student.ProfilePhotoUrl.StartsWith("https://", StringComparison.OrdinalIgnoreCase))
                         {
-                            var fileStream = new FileStream(student.ProfilePhotoUrl, FileMode.Open, FileAccess.Read);
-                            var formFile = new FormFile(fileStream, 0, fileStream.Length, "student_" + studentId, fileInfo.Name)
+                            // Download from URL (Supabase)
+                            using var httpClient = new HttpClient();
+                            var photoBytes = await httpClient.GetByteArrayAsync(student.ProfilePhotoUrl);
+                            var photoStream = new MemoryStream(photoBytes);
+
+                            var formFile = new FormFile(photoStream, 0, photoBytes.Length, "student_" + studentId, $"{studentId}.jpg")
                             {
                                 Headers = new HeaderDictionary(),
                                 ContentType = "image/jpeg"
                             };
                             studentImages[studentId] = formFile;
-                            _logger.LogInformation($"Added student {studentId} to Flask setup batch");
+                            _logger.LogInformation($"✅ Downloaded photo for student {student.StudentNumber} from Supabase");
                         }
                         else
                         {
-                            _logger.LogWarning($"Photo file not found for student {student.StudentNumber}: {student.ProfilePhotoUrl}");
+                            // Local file path
+                            var fileInfo = new FileInfo(student.ProfilePhotoUrl);
+                            if (fileInfo.Exists)
+                            {
+                                var fileStream = new FileStream(student.ProfilePhotoUrl, FileMode.Open, FileAccess.Read);
+                                var formFile = new FormFile(fileStream, 0, fileStream.Length, "student_" + studentId, fileInfo.Name)
+                                {
+                                    Headers = new HeaderDictionary(),
+                                    ContentType = "image/jpeg"
+                                };
+                                studentImages[studentId] = formFile;
+                                _logger.LogInformation($"✅ Loaded local photo for student {student.StudentNumber}");
+                            }
+                            else
+                            {
+                                _logger.LogWarning($"❌ Photo file not found for student {student.StudentNumber}: {student.ProfilePhotoUrl}");
+                            }
                         }
                     }
                     catch (Exception ex)
                     {
-                        _logger.LogError(ex, $"Failed to load photo for student {student.StudentNumber}");
+                        _logger.LogError(ex, $"❌ Failed to load photo for student {student.StudentNumber}");
                         errors.Add($"Failed to load photo for student {student.StudentNumber}: {ex.Message}");
                     }
                 }
                 else
                 {
-                    _logger.LogWarning($"Student {student.StudentNumber} has no profile photo");
+                    _logger.LogWarning($"❌ Student {student.StudentNumber} has no profile photo");
                 }
 
                 successCount++;
@@ -253,40 +275,65 @@ public class ClassService : IClassService
 
         await _unitOfWork.SaveChangesAsync();
 
-        // Setup Flask Face API class database with all enrolled students
-        _logger.LogInformation($"Collected {studentImages.Count} student images for Flask setup");
+        // Register students with Flask Face API individually
+        _logger.LogInformation($"Collected {studentImages.Count} student images for Flask registration");
 
         if (studentImages.Any())
         {
-            try
+            var registeredCount = 0;
+            var registrationErrors = new List<string>();
+
+            foreach (var (studentId, imageFile) in studentImages)
             {
-                _logger.LogInformation($"Calling Flask API to setup class database for {classId} with {studentImages.Count} students");
-                var flaskResult = await _flaskFaceService.SetupClassDatabaseAsync(classId, studentImages);
-                if (!flaskResult.Success)
+                try
                 {
-                    _logger.LogWarning($"Flask setup failed: {flaskResult.Error}");
-                    errors.Add($"Warning: Face database setup failed: {flaskResult.Error}");
+                    _logger.LogInformation($"Registering student {studentId} with Flask API");
+
+                    // Call Flask register endpoint for each student
+                    var flaskResult = await _flaskApiClient.RegisterStudentAsync(studentId, imageFile);
+
+                    if (flaskResult.Success)
+                    {
+                        registeredCount++;
+                        _logger.LogInformation($"✅ Successfully registered student {studentId} with Flask");
+                    }
+                    else
+                    {
+                        var errorMsg = $"Student {studentId}: {flaskResult.Message}";
+                        registrationErrors.Add(errorMsg);
+                        _logger.LogWarning($"❌ Flask registration failed for student {studentId}: {flaskResult.Message}");
+                    }
                 }
-                else
+                catch (Exception ex)
                 {
-                    _logger.LogInformation($"Flask setup successful for class {classId}");
+                    var errorMsg = $"Student {studentId}: {ex.Message}";
+                    registrationErrors.Add(errorMsg);
+                    _logger.LogError(ex, $"❌ Flask registration error for student {studentId}");
                 }
             }
-            catch (Exception ex)
+
+            // Cleanup file streams
+            foreach (var (_, formFile) in studentImages)
             {
-                _logger.LogError(ex, $"Flask setup error for class {classId}");
-                errors.Add($"Warning: Face database setup error: {ex.Message}");
-            }
-            finally
-            {
-                // Cleanup file streams
-                foreach (var (_, formFile) in studentImages)
+                try
                 {
                     if (formFile is FormFile ff)
                     {
                         await ff.OpenReadStream().DisposeAsync();
                     }
                 }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "Error disposing file stream");
+                }
+            }
+
+            _logger.LogInformation($"Flask registration complete: {registeredCount}/{studentImages.Count} students registered");
+
+            if (registrationErrors.Any())
+            {
+                errors.Add($"Warning: {registrationErrors.Count} student(s) failed Flask registration");
+                errors.AddRange(registrationErrors);
             }
         }
 
