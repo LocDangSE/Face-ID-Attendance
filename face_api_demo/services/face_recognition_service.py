@@ -14,6 +14,7 @@ import logging
 from config.settings import settings, get_session_path
 from services.image_processor import ImageProcessor
 from services.embedding_cache import EmbeddingCache
+from utils import get_now
 
 logger = logging.getLogger(__name__)
 
@@ -92,7 +93,7 @@ class FaceRecognitionService:
             
             # Cache embedding
             metadata = {
-                'registered_at': datetime.utcnow().isoformat(),
+                'registered_at': get_now().isoformat(),
                 'image_path': image_path,
                 'confidence': face_data['confidence']
             }
@@ -234,7 +235,7 @@ class FaceRecognitionService:
                 'total_faces_detected': len(faces),
                 'total_recognized': len(recognized_students),
                 'processing_time': round(processing_time, 3),
-                'timestamp': datetime.utcnow().isoformat()
+                'timestamp': get_now().isoformat()
             }
             
             # Save results to session folder

@@ -12,6 +12,7 @@ from datetime import datetime
 import json
 
 from config.settings import settings, get_embedding_path
+from utils import get_now
 
 logger = logging.getLogger(__name__)
 
@@ -123,7 +124,7 @@ class EmbeddingCache:
             metadata.update({
                 'student_id': student_id,
                 'model': self.model_name,
-                'cached_at': datetime.utcnow().isoformat(),
+                'cached_at': get_now().isoformat(),
                 'embedding_shape': embedding.shape
             })
             self.metadata[student_id] = metadata

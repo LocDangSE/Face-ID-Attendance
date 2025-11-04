@@ -1,5 +1,6 @@
 using FaceIdBackend.Infrastructure.Configuration;
 using FaceIdBackend.Infrastructure.Services.Interfaces;
+using FaceIdBackend.Shared.Utils;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
@@ -261,7 +262,7 @@ public class SupabaseStorageServiceEnhanced : ISupabaseStorageService
             {
                 var placeholderPath = $"{sessionFolder}/{subfolder}/.keep";
                 // Make placeholder file larger - some storage systems reject very small files
-                var placeholderContent = $"# Session folder placeholder\n# Created: {DateTime.UtcNow:yyyy-MM-dd HH:mm:ss} UTC\n# Path: {sessionFolder}/{subfolder}\n";
+                var placeholderContent = $"# Session folder placeholder\n# Created: {TimezoneHelper.GetUtcNowForStorage():yyyy-MM-dd HH:mm:ss} UTC\n# Path: {sessionFolder}/{subfolder}\n";
                 var placeholderData = System.Text.Encoding.UTF8.GetBytes(placeholderContent);
 
                 try

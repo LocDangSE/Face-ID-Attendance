@@ -5,6 +5,7 @@ using FaceIdBackend.Infrastructure.Services;
 using FaceIdBackend.Infrastructure.Services.Interfaces;
 using FaceIdBackend.Infrastructure.UnitOfWork;
 using FaceIdBackend.Shared.DTOs;
+using FaceIdBackend.Shared.Utils;
 using Microsoft.AspNetCore.Http;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
@@ -70,7 +71,7 @@ public class ClassService : IClassService
             Description = request.Description,
             Location = request.Location,
             IsActive = true,
-            CreatedAt = DateTime.UtcNow
+            CreatedAt = TimezoneHelper.GetUtcNowForStorage()
         };
 
         // Flask API doesn't require pre-creating class database
@@ -98,7 +99,7 @@ public class ClassService : IClassService
         classEntity.ClassCode = request.ClassCode;
         classEntity.Description = request.Description;
         classEntity.Location = request.Location;
-        classEntity.UpdatedAt = DateTime.UtcNow;
+        classEntity.UpdatedAt = TimezoneHelper.GetUtcNowForStorage();
 
         _unitOfWork.Classes.Update(classEntity);
         await _unitOfWork.SaveChangesAsync();
@@ -121,7 +122,7 @@ public class ClassService : IClassService
 
             // Soft delete class
             classEntity.IsActive = false;
-            classEntity.UpdatedAt = DateTime.UtcNow;
+            classEntity.UpdatedAt = TimezoneHelper.GetUtcNowForStorage();
             _unitOfWork.Classes.Update(classEntity);
 
             await _unitOfWork.CommitTransactionAsync();
@@ -191,7 +192,7 @@ public class ClassService : IClassService
                     {
                         // Reactivate enrollment
                         existingEnrollment.Status = "Active";
-                        existingEnrollment.EnrolledAt = DateTime.UtcNow;
+                        existingEnrollment.EnrolledAt = TimezoneHelper.GetUtcNowForStorage();
                         _unitOfWork.ClassEnrollments.Update(existingEnrollment);
                     }
                 }
@@ -204,7 +205,7 @@ public class ClassService : IClassService
                         ClassId = classId,
                         StudentId = studentId,
                         Status = "Active",
-                        EnrolledAt = DateTime.UtcNow
+                        EnrolledAt = TimezoneHelper.GetUtcNowForStorage()
                     };
                     await _unitOfWork.ClassEnrollments.AddAsync(enrollment);
                 }

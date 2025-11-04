@@ -2,6 +2,7 @@ using FaceIdBackend.Application.Services.Interfaces;
 using FaceIdBackend.Domain.Data;
 using FaceIdBackend.Infrastructure.Services.Interfaces;
 using FaceIdBackend.Infrastructure.UnitOfWork;
+using FaceIdBackend.Shared.Utils;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using System.Text;
@@ -52,10 +53,10 @@ public class SessionService : ISessionService
             SessionId = Guid.NewGuid(),
             ClassId = classId,
             SessionDate = sessionDate,
-            SessionStartTime = DateTime.UtcNow,
+            SessionStartTime = TimezoneHelper.GetUtcNowForStorage(),
             Status = "InProgress",
             Location = location,
-            CreatedAt = DateTime.UtcNow
+            CreatedAt = TimezoneHelper.GetUtcNowForStorage()
         };
 
         await _unitOfWork.AttendanceSessions.AddAsync(session);
@@ -136,7 +137,7 @@ public class SessionService : ISessionService
                 WriteIndented = true
             });
             var jsonBytes = Encoding.UTF8.GetBytes(jsonContent);
-            var fileName = $"results_{DateTime.UtcNow:yyyyMMdd_HHmmss}.json";
+            var fileName = $"results_{TimezoneHelper.GetUtcNowForStorage():yyyyMMdd_HHmmss}.json";
 
             var publicUrl = await _supabaseStorage.UploadToSessionAsync(
                 sessionId,
@@ -167,7 +168,7 @@ public class SessionService : ISessionService
         if (session.Status != "InProgress")
             throw new InvalidOperationException("Session is not in progress");
 
-        session.SessionEndTime = DateTime.UtcNow;
+        session.SessionEndTime = TimezoneHelper.GetUtcNowForStorage();
         session.Status = "Completed";
 
         _unitOfWork.AttendanceSessions.Update(session);

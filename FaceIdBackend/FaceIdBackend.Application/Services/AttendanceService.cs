@@ -5,6 +5,7 @@ using FaceIdBackend.Infrastructure.Services;
 using FaceIdBackend.Infrastructure.Services.Interfaces;
 using FaceIdBackend.Infrastructure.UnitOfWork;
 using FaceIdBackend.Shared.DTOs;
+using FaceIdBackend.Shared.Utils;
 using Microsoft.AspNetCore.Http;
 using Microsoft.EntityFrameworkCore;
 using OfficeOpenXml;
@@ -311,11 +312,11 @@ public class AttendanceService : IAttendanceService
                         AttendanceId = Guid.NewGuid(),
                         SessionId = sessionId,
                         StudentId = student.StudentId,
-                        CheckInTime = DateTime.UtcNow,
+                        CheckInTime = TimezoneHelper.GetUtcNowForStorage(),
                         ConfidenceScore = recognizedStudent.Confidence,
                         Status = "Present",
                         IsManualOverride = false,
-                        CreatedAt = DateTime.UtcNow
+                        CreatedAt = TimezoneHelper.GetUtcNowForStorage()
                     };
 
                     await _unitOfWork.AttendanceRecords.AddAsync(attendanceRecord);
@@ -332,7 +333,7 @@ public class AttendanceService : IAttendanceService
                     StudentNumber = student.StudentNumber,
                     Name = $"{student.FirstName} {student.LastName}",
                     ConfidenceScore = recognizedStudent.Confidence,
-                    CheckInTime = DateTime.UtcNow,
+                    CheckInTime = TimezoneHelper.GetUtcNowForStorage(),
                     IsNewRecord = isNewRecord
                 });
             }
@@ -416,11 +417,11 @@ public class AttendanceService : IAttendanceService
                 AttendanceId = Guid.NewGuid(),
                 SessionId = request.SessionId,
                 StudentId = request.StudentId,
-                CheckInTime = DateTime.UtcNow,
+                CheckInTime = TimezoneHelper.GetUtcNowForStorage(),
                 Status = request.Status,
                 IsManualOverride = true,
                 Notes = request.Notes,
-                CreatedAt = DateTime.UtcNow
+                CreatedAt = TimezoneHelper.GetUtcNowForStorage()
             };
 
             await _unitOfWork.AttendanceRecords.AddAsync(attendanceRecord);

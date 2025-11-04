@@ -21,7 +21,7 @@ from models.schemas import (
     RecognizedStudent,
     FaceRegion
 )
-from utils import FileHandler, validate_image_file, validate_student_id, validate_class_id
+from utils import FileHandler, validate_image_file, validate_student_id, validate_class_id, get_now
 
 # Setup logging
 logger = setup_logging(log_level="INFO" if not settings.FLASK_DEBUG else "DEBUG")
@@ -61,7 +61,7 @@ def health_check():
             service="Face Recognition API",
             model=settings.DEEPFACE_MODEL,
             cache_stats=CacheStats(**cache_stats),
-            timestamp=datetime.utcnow().isoformat()
+            timestamp=get_now().isoformat()
         )
         
         return jsonify(response.dict()), 200
@@ -71,7 +71,7 @@ def health_check():
         return jsonify({
             "status": "error",
             "error": str(e),
-            "timestamp": datetime.utcnow().isoformat()
+            "timestamp": get_now().isoformat()
         }), 500
 
 
@@ -222,7 +222,7 @@ def register_student():
         if supabase_service.is_enabled():
             try:
                 from datetime import datetime
-                filename = f"{student_id}_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}.jpg"
+                filename = f"{student_id}_{get_now().strftime('%Y%m%d_%H%M%S')}.jpg"
                 face_url, _ = supabase_service.save_student_face(
                     local_path=temp_file,
                     student_id=student_id,

@@ -4,6 +4,7 @@ using FaceIdBackend.Domain.Data;
 using FaceIdBackend.Infrastructure.Services.Interfaces;
 using FaceIdBackend.Infrastructure.UnitOfWork;
 using FaceIdBackend.Shared.DTOs;
+using FaceIdBackend.Shared.Utils;
 using Microsoft.AspNetCore.Http;
 using Microsoft.EntityFrameworkCore;
 
@@ -62,7 +63,7 @@ public class StudentService : IStudentService
             LastName = request.LastName,
             Email = request.Email,
             IsActive = true,
-            CreatedAt = DateTime.UtcNow
+            CreatedAt = TimezoneHelper.GetUtcNowForStorage()
         };
 
         // Save photo and register face if provided
@@ -102,7 +103,7 @@ public class StudentService : IStudentService
         student.FirstName = request.FirstName;
         student.LastName = request.LastName;
         student.Email = request.Email;
-        student.UpdatedAt = DateTime.UtcNow;
+        student.UpdatedAt = TimezoneHelper.GetUtcNowForStorage();
 
         _unitOfWork.Students.Update(student);
         await _unitOfWork.SaveChangesAsync();
@@ -142,7 +143,7 @@ public class StudentService : IStudentService
 
             // Soft delete student
             student.IsActive = false;
-            student.UpdatedAt = DateTime.UtcNow;
+            student.UpdatedAt = TimezoneHelper.GetUtcNowForStorage();
             _unitOfWork.Students.Update(student);
 
             await _unitOfWork.CommitTransactionAsync();
@@ -187,7 +188,7 @@ public class StudentService : IStudentService
                 // Log warning - will need to re-setup class databases
             }
 
-            student.UpdatedAt = DateTime.UtcNow;
+            student.UpdatedAt = TimezoneHelper.GetUtcNowForStorage();
             _unitOfWork.Students.Update(student);
 
             await _unitOfWork.CommitTransactionAsync();
@@ -231,7 +232,7 @@ public class StudentService : IStudentService
             }
 
             student.ProfilePhotoUrl = null;
-            student.UpdatedAt = DateTime.UtcNow;
+            student.UpdatedAt = TimezoneHelper.GetUtcNowForStorage();
 
             _unitOfWork.Students.Update(student);
 
