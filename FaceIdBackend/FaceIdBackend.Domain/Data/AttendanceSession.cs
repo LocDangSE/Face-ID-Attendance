@@ -26,4 +26,6 @@ public partial class AttendanceSession
     public virtual ICollection<AttendanceRecord> AttendanceRecords { get; set; } = new List<AttendanceRecord>();
 
     public virtual Class Class { get; set; } = null!;
+
+    public virtual SessionSnapshot? SessionSnapshot { get; set; }
 }

@@ -14,10 +14,12 @@ import { saveAs } from 'file-saver';
 // Custom hooks
 import { useWebcam } from '@hooks/useWebcam';
 import { useAttendance } from '@hooks/useAttendance';
+import { useFaceDetection } from '@hooks/useFaceDetection';
 
 // Utils
 import { blobToFile } from '@utils/imageProcessor';
 import { formatDate, formatTime, formatConfidence } from '@utils/formatters';
+import { formatQualityScore } from '@utils/faceDetectionUtils';
 
 // Components
 import { LoadingSpinner } from '@components/common/LoadingSpinner';
@@ -27,13 +29,15 @@ import { ErrorAlert } from '@components/common/ErrorAlert';
 import type { AttendanceStatus } from '@api/types';
 
 type AttendanceMode = 'ai' | 'manual';
+type CaptureMode = 'manual' | 'auto';
 
 const TakeAttendance: React.FC = () => {
     const [searchParams] = useSearchParams();
     const sessionIdParam = searchParams.get('sessionId');
 
-    // Mode state
+    // Mode states
     const [mode, setMode] = useState<AttendanceMode>('ai');
+    const [captureMode, setCaptureMode] = useState<CaptureMode>('manual');
 
     // Webcam hook with FPS limiting (1 FPS max)
     const {
@@ -44,6 +48,25 @@ const TakeAttendance: React.FC = () => {
         timeUntilNextCapture,
         error: webcamError
     } = useWebcam();
+
+    // Face detection hook for auto-capture
+    const {
+        isModelLoading,
+        isDetecting,
+        modelError,
+        facesDetected,
+        guidanceMessage,
+        qualityScore,
+        canvasRef,
+        isFaceReady
+    } = useFaceDetection({
+        enabled: mode === 'ai' && captureMode === 'auto',
+        onFaceReady: async (score) => {
+            console.log(`[TakeAttendance] 🤖 Auto-capture triggered! (quality: ${score})`);
+            await handleAutoCapture();
+        },
+        webcamRef
+    });
 
     // Attendance hook with auto-refresh
     const {
@@ -80,7 +103,55 @@ const TakeAttendance: React.FC = () => {
     };
 
     /**
-     * Capture and recognize face with FPS limiting
+     * Auto-capture handler (bypasses manual FPS limit)
+     * Face detection hook already has 3-second cooldown
+     */
+    const handleAutoCapture = async () => {
+        if (!selectedSession) {
+            console.log('[TakeAttendance] No session selected, skipping auto-capture');
+            return;
+        }
+
+        if (isCapturing || recognizing) {
+            console.log('[TakeAttendance] Already capturing/recognizing, skipping');
+            return;
+        }
+
+        try {
+            console.log('[TakeAttendance] 📸 Starting auto-capture...');
+
+            // Capture image WITHOUT FPS limit check (face detection has its own cooldown)
+            const blob = await capture();
+
+            if (!blob) {
+                console.error('[TakeAttendance] Auto-capture failed: no blob');
+                return;
+            }
+
+            // Convert to File
+            const file = blobToFile(blob, `auto_capture_${Date.now()}.jpg`);
+
+            console.log('[TakeAttendance] 🧠 Sending to recognition...');
+
+            // Recognize face
+            const recognizedStudents = await recognizeFace(file);
+
+            // Show result
+            if (recognizedStudents.length > 0) {
+                toast.success(
+                    `🤖 Auto-detected ${recognizedStudents.length} student(s)!`,
+                    { autoClose: 2000 }
+                );
+            } else {
+                console.log('[TakeAttendance] No faces recognized in auto-capture');
+            }
+        } catch (error) {
+            console.error('[TakeAttendance] Auto-capture error:', error);
+        }
+    };
+
+    /**
+     * Manual capture and recognize face with FPS limiting
      */
     const handleCaptureAndRecognize = async () => {
         if (!selectedSession) {
@@ -358,59 +429,173 @@ const TakeAttendance: React.FC = () => {
                     {/* AI Mode */}
                     {mode === 'ai' && (
                         <div className="card bg-white rounded-2xl">
-                            <h2 className="text-2xl font-bold text-gray-900 mb-6 flex items-center">
-                                <FaCamera className="mr-3 text-indigo-600" />
-                                AI Face Recognition (FPS Limited: 1)
-                            </h2>
+                            <div className="flex flex-col sm:flex-row sm:justify-between sm:items-center gap-4 mb-6">
+                                <h2 className="text-2xl font-bold text-gray-900 flex items-center">
+                                    <FaCamera className="mr-3 text-indigo-600" />
+                                    AI Face Recognition
+                                </h2>
+
+                                {/* Capture Mode Toggle */}
+                                <div className="flex items-center gap-2 bg-gray-100 rounded-xl p-1">
+                                    <button
+                                        onClick={() => setCaptureMode('manual')}
+                                        className={`px-4 py-2 rounded-lg font-semibold text-sm transition-all ${captureMode === 'manual'
+                                            ? 'bg-white text-indigo-600 shadow-md'
+                                            : 'text-gray-600 hover:text-gray-800'
+                                            }`}
+                                    >
+                                        📸 Manual
+                                    </button>
+                                    <button
+                                        onClick={() => setCaptureMode('auto')}
+                                        className={`px-4 py-2 rounded-lg font-semibold text-sm transition-all ${captureMode === 'auto'
+                                            ? 'bg-white text-indigo-600 shadow-md'
+                                            : 'text-gray-600 hover:text-gray-800'
+                                            }`}
+                                    >
+                                        🤖 Auto-Detect
+                                    </button>
+                                </div>
+                            </div>
 
                             {webcamError && <ErrorAlert message={webcamError} className="mb-4" />}
                             {recognitionError && <ErrorAlert message={recognitionError} className="mb-4" />}
+                            {modelError && <ErrorAlert message={`Face detection model error: ${modelError}`} className="mb-4" />}
 
                             <div className="flex flex-col items-center space-y-6">
-                                <div className="w-full max-w-3xl aspect-video bg-gradient-to-br from-gray-900 to-gray-800 rounded-2xl overflow-hidden shadow-2xl border-4 border-indigo-200">
-                                    <Webcam
-                                        ref={webcamRef}
-                                        screenshotFormat="image/jpeg"
-                                        className="w-full h-full object-cover"
-                                        videoConstraints={{
-                                            facingMode: 'user',
-                                            width: 1280,
-                                            height: 720
-                                        }}
-                                    />
-                                </div>
+                                {/* Webcam with Canvas Overlay */}
+                                <div className="w-full max-w-3xl relative">
+                                    <div className="aspect-video bg-gradient-to-br from-gray-900 to-gray-800 rounded-2xl overflow-hidden shadow-2xl border-4 border-indigo-200 relative">
+                                        <Webcam
+                                            ref={webcamRef}
+                                            screenshotFormat="image/jpeg"
+                                            className="w-full h-full object-cover"
+                                            videoConstraints={{
+                                                facingMode: 'user',
+                                                width: 1280,
+                                                height: 720
+                                            }}
+                                        />
 
-                                <div className="flex flex-col items-center gap-3">
-                                    <button
-                                        onClick={handleCaptureAndRecognize}
-                                        disabled={isCapturing || recognizing || !canCapture}
-                                        className="btn-primary px-10 py-4 text-lg font-bold shadow-xl disabled:opacity-50 disabled:cursor-not-allowed"
-                                    >
-                                        {isCapturing || recognizing ? (
-                                            <>
-                                                <svg className="animate-spin -ml-1 mr-3 h-5 w-5 text-white inline" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-                                                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
-                                                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-                                                </svg>
-                                                {recognizing ? 'Recognizing...' : 'Capturing...'}
-                                            </>
-                                        ) : (
-                                            <>
-                                                <FaCamera className="inline mr-2" />
-                                                Capture & Recognize
-                                            </>
+                                        {/* Face Detection Overlay Canvas */}
+                                        {captureMode === 'auto' && (
+                                            <canvas
+                                                ref={canvasRef}
+                                                className="absolute top-0 left-0 w-full h-full pointer-events-none"
+                                                style={{ mixBlendMode: 'normal' }}
+                                            />
                                         )}
-                                    </button>
+                                    </div>
 
-                                    {!canCapture && timeUntilNextCapture > 0 && (
-                                        <div className="text-sm text-amber-600 font-medium">
-                                            ⏱️ Next capture in {(timeUntilNextCapture / 1000).toFixed(1)}s (FPS limit: 1)
+                                    {/* Auto-Detection Status Badge */}
+                                    {captureMode === 'auto' && (
+                                        <div className="absolute top-4 left-4 right-4 z-10">
+                                            <div className={`p-3 rounded-xl shadow-lg backdrop-blur-md border-2 ${isFaceReady
+                                                ? 'bg-green-500/90 border-green-300'
+                                                : isDetecting
+                                                    ? 'bg-blue-500/90 border-blue-300'
+                                                    : 'bg-gray-500/90 border-gray-300'
+                                                }`}>
+                                                <div className="flex items-center justify-between text-white">
+                                                    <div className="flex items-center gap-2">
+                                                        {isModelLoading ? (
+                                                            <div className="flex items-center gap-2">
+                                                                <svg className="animate-spin h-5 w-5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                                                                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                                                                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                                                                </svg>
+                                                                <span className="font-semibold">Loading AI model...</span>
+                                                            </div>
+                                                        ) : (
+                                                            <>
+                                                                <div className={`w-3 h-3 rounded-full ${isFaceReady ? 'bg-white animate-pulse' : isDetecting ? 'bg-white/70' : 'bg-white/40'}`}></div>
+                                                                <span className="font-semibold">{guidanceMessage}</span>
+                                                            </>
+                                                        )}
+                                                    </div>
+
+                                                    {facesDetected > 0 && (
+                                                        <div className="flex items-center gap-3 text-sm">
+                                                            <span>👤 {facesDetected}</span>
+                                                            <span>📊 {formatQualityScore(qualityScore)}</span>
+                                                        </div>
+                                                    )}
+                                                </div>
+                                            </div>
                                         </div>
                                     )}
+                                </div>
 
-                                    <div className="text-xs text-gray-500">
-                                        💡 FPS limited to 1 frame/second for optimal performance (96% CPU reduction)
-                                    </div>
+                                <div className="flex flex-col items-center gap-3 w-full max-w-3xl">
+                                    {/* Manual Capture Button */}
+                                    {captureMode === 'manual' && (
+                                        <>
+                                            <button
+                                                onClick={handleCaptureAndRecognize}
+                                                disabled={isCapturing || recognizing || !canCapture}
+                                                className="btn-primary px-10 py-4 text-lg font-bold shadow-xl disabled:opacity-50 disabled:cursor-not-allowed"
+                                            >
+                                                {isCapturing || recognizing ? (
+                                                    <>
+                                                        <svg className="animate-spin -ml-1 mr-3 h-5 w-5 text-white inline" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                                                            <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                                                            <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                                                        </svg>
+                                                        {recognizing ? 'Recognizing...' : 'Capturing...'}
+                                                    </>
+                                                ) : (
+                                                    <>
+                                                        <FaCamera className="inline mr-2" />
+                                                        Capture & Recognize
+                                                    </>
+                                                )}
+                                            </button>
+
+                                            {!canCapture && timeUntilNextCapture > 0 && (
+                                                <div className="text-sm text-amber-600 font-medium">
+                                                    ⏱️ Next capture in {(timeUntilNextCapture / 1000).toFixed(1)}s (FPS limit: 1)
+                                                </div>
+                                            )}
+
+                                            <div className="text-xs text-gray-500 text-center">
+                                                💡 Manual mode: Click button to capture and recognize
+                                            </div>
+                                        </>
+                                    )}
+
+                                    {/* Auto-Detection Info */}
+                                    {captureMode === 'auto' && (
+                                        <div className="w-full">
+                                            <div className="p-4 bg-gradient-to-r from-indigo-50 to-purple-50 rounded-xl border-l-4 border-indigo-500">
+                                                <div className="flex items-start gap-3">
+                                                    <div className="flex-shrink-0 mt-1">
+                                                        <div className="w-10 h-10 rounded-full bg-indigo-100 flex items-center justify-center">
+                                                            🤖
+                                                        </div>
+                                                    </div>
+                                                    <div className="flex-1">
+                                                        <h4 className="font-bold text-indigo-900 mb-2">Auto-Detection Active</h4>
+                                                        <ul className="text-sm text-indigo-700 space-y-1">
+                                                            <li>✓ Face detection running at 10 FPS</li>
+                                                            <li>✓ Auto-capture when face is centered and clear</li>
+                                                            <li>✓ 3-second cooldown between captures</li>
+                                                            <li>✓ No button press needed - just position your face!</li>
+                                                        </ul>
+
+                                                        {(isCapturing || recognizing) && (
+                                                            <div className="mt-3 flex items-center gap-2 text-green-700 font-semibold">
+                                                                <svg className="animate-spin h-4 w-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                                                                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                                                                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                                                                </svg>
+                                                                <span>{recognizing ? '🧠 Recognizing face...' : '📸 Capturing...'}</span>
+                                                            </div>
+                                                        )}
+                                                    </div>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    )}
                                 </div>
                             </div>
                         </div>

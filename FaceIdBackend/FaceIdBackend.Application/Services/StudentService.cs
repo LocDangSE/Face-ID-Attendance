@@ -16,17 +16,20 @@ public class StudentService : IStudentService
     private readonly IMapper _mapper;
     private readonly IFileStorageService _fileStorage;
     private readonly IFlaskFaceRecognitionService _flaskFaceService;
+    private readonly ICacheSyncService _cacheSyncService;
 
     public StudentService(
         IUnitOfWork unitOfWork,
         IMapper mapper,
         IFileStorageService fileStorage,
-        IFlaskFaceRecognitionService flaskFaceService)
+        IFlaskFaceRecognitionService flaskFaceService,
+        ICacheSyncService cacheSyncService)
     {
         _unitOfWork = unitOfWork;
         _mapper = mapper;
         _fileStorage = fileStorage;
         _flaskFaceService = flaskFaceService;
+        _cacheSyncService = cacheSyncService;
     }
 
     public async Task<List<StudentDto>> GetAllStudentsAsync()
@@ -82,6 +85,19 @@ public class StudentService : IStudentService
 
         await _unitOfWork.Students.AddAsync(student);
         await _unitOfWork.SaveChangesAsync();
+
+        // Enqueue background job to refresh cache (non-blocking)
+        if (!string.IsNullOrWhiteSpace(student.ProfilePhotoUrl))
+        {
+            try
+            {
+                _cacheSyncService.EnqueueRefreshStudentCache(student.StudentId, student.ProfilePhotoUrl);
+            }
+            catch
+            {
+                // Log but don't fail - cache will sync eventually
+            }
+        }
 
         return _mapper.Map<StudentDto>(student);
     }
@@ -147,6 +163,16 @@ public class StudentService : IStudentService
             _unitOfWork.Students.Update(student);
 
             await _unitOfWork.CommitTransactionAsync();
+
+            // Enqueue background job to clear cache (non-blocking)
+            try
+            {
+                _cacheSyncService.EnqueueClearStudentCache(student.StudentId);
+            }
+            catch
+            {
+                // Log but don't fail - cache will be cleared eventually
+            }
         }
         catch
         {
@@ -193,6 +219,19 @@ public class StudentService : IStudentService
 
             await _unitOfWork.CommitTransactionAsync();
 
+            // Enqueue background job to refresh cache with new photo (non-blocking)
+            if (!string.IsNullOrWhiteSpace(student.ProfilePhotoUrl))
+            {
+                try
+                {
+                    _cacheSyncService.EnqueueRefreshStudentCache(student.StudentId, student.ProfilePhotoUrl);
+                }
+                catch
+                {
+                    // Log but don't fail - cache will sync eventually
+                }
+            }
+
             return _mapper.Map<StudentDto>(student);
         }
         catch
@@ -237,6 +276,16 @@ public class StudentService : IStudentService
             _unitOfWork.Students.Update(student);
 
             await _unitOfWork.CommitTransactionAsync();
+
+            // Enqueue background job to clear cache (non-blocking)
+            try
+            {
+                _cacheSyncService.EnqueueClearStudentCache(student.StudentId);
+            }
+            catch
+            {
+                // Log but don't fail - cache will be cleared eventually
+            }
         }
         catch
         {

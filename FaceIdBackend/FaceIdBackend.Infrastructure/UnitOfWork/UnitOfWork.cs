@@ -18,6 +18,7 @@ public class UnitOfWork : IUnitOfWork
         ClassEnrollments = new Repository<ClassEnrollment>(_context);
         AttendanceSessions = new Repository<AttendanceSession>(_context);
         AttendanceRecords = new Repository<AttendanceRecord>(_context);
+        SessionSnapshots = new Repository<SessionSnapshot>(_context);
     }
 
     public IRepository<Student> Students { get; private set; }
@@ -25,6 +26,7 @@ public class UnitOfWork : IUnitOfWork
     public IRepository<ClassEnrollment> ClassEnrollments { get; private set; }
     public IRepository<AttendanceSession> AttendanceSessions { get; private set; }
     public IRepository<AttendanceRecord> AttendanceRecords { get; private set; }
+    public IRepository<SessionSnapshot> SessionSnapshots { get; private set; }
 
     public async Task<int> SaveChangesAsync()
     {

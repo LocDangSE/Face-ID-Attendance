@@ -26,6 +26,8 @@ public partial class AttendanceSystemContext : DbContext
 
     public virtual DbSet<Student> Students { get; set; }
 
+    public virtual DbSet<SessionSnapshot> SessionSnapshots { get; set; }
+
     protected override void OnConfiguring(DbContextOptionsBuilder optionsBuilder)
     {
         if (!optionsBuilder.IsConfigured)
@@ -179,6 +181,35 @@ public partial class AttendanceSystemContext : DbContext
             entity.Property(e => e.LastName).HasMaxLength(100);
             entity.Property(e => e.ProfilePhotoUrl).HasMaxLength(500);
             entity.Property(e => e.StudentNumber).HasMaxLength(50);
+        });
+
+        modelBuilder.Entity<SessionSnapshot>(entity =>
+        {
+            entity.HasKey(e => e.SnapshotId).HasName("PK__SessionS__SnapshotID");
+
+            entity.HasIndex(e => e.SessionId, "IX_SessionSnapshots_SessionID").IsUnique();
+            entity.HasIndex(e => e.GeneratedAt, "IX_SessionSnapshots_GeneratedAt");
+
+            entity.Property(e => e.SnapshotId)
+                .HasDefaultValueSql("(newid())")
+                .HasColumnName("SnapshotID");
+            entity.Property(e => e.SessionId).HasColumnName("SessionID");
+            entity.Property(e => e.TotalStudents).HasDefaultValue(0);
+            entity.Property(e => e.PresentCount).HasDefaultValue(0);
+            entity.Property(e => e.AbsentCount).HasDefaultValue(0);
+            entity.Property(e => e.LateCount).HasDefaultValue(0);
+            entity.Property(e => e.AttendanceRate).HasColumnType("decimal(5, 2)");
+            entity.Property(e => e.CapturedImagesFolder).HasMaxLength(500);
+            entity.Property(e => e.RecognitionResultsJson).HasColumnType("nvarchar(max)");
+            entity.Property(e => e.AttendanceRecordsJson).HasColumnType("nvarchar(max)");
+            entity.Property(e => e.SessionMetadataJson).HasColumnType("nvarchar(max)");
+            entity.Property(e => e.GeneratedAt).HasDefaultValueSql("(getutcdate())");
+            entity.Property(e => e.GeneratedBy).HasMaxLength(100);
+
+            entity.HasOne(d => d.Session)
+                .WithOne(p => p.SessionSnapshot)
+                .HasForeignKey<SessionSnapshot>(d => d.SessionId)
+                .HasConstraintName("FK_SessionSnapshot_Session");
         });
 
         OnModelCreatingPartial(modelBuilder);

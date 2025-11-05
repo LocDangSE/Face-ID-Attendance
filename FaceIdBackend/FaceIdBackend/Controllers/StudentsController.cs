@@ -217,11 +217,11 @@ public class StudentsController : ControllerBase
     [HttpPut("{id}/photo")]
     public async Task<ActionResult<ApiResponse<StudentDto>>> UpdateStudentPhoto(
         Guid id,
-        [FromForm] IFormFile photo)
+        [FromForm] UpdateStudentPhotoRequest request)
     {
         try
         {
-            if (photo == null || photo.Length == 0)
+            if (request.Photo == null || request.Photo.Length == 0)
             {
                 return BadRequest(new ApiResponse<StudentDto>
                 {
@@ -230,7 +230,7 @@ public class StudentsController : ControllerBase
                 });
             }
 
-            var student = await _studentService.UpdateStudentPhotoAsync(id, photo);
+            var student = await _studentService.UpdateStudentPhotoAsync(id, request.Photo);
             return Ok(new ApiResponse<StudentDto>
             {
                 Success = true,

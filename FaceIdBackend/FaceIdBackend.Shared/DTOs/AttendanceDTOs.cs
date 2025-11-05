@@ -32,6 +32,11 @@ public class UpdateStudentRequest
     public string Email { get; set; } = null!;
 }
 
+public class UpdateStudentPhotoRequest
+{
+    public IFormFile Photo { get; set; } = null!;
+}
+
 // Class DTOs
 public class ClassDto
 {

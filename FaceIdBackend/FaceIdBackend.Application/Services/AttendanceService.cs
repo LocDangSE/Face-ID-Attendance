@@ -304,8 +304,8 @@ public class AttendanceService : IAttendanceService
 
                 if (isNewRecord)
                 {
-                    _logger.LogInformation("Creating new attendance record: Session {SessionId}, Student {StudentId}",
-                        sessionId, student.StudentId);
+                    _logger.LogInformation("Creating new attendance record: Session {SessionId}, Student {StudentId}, Confidence {Confidence}",
+                        sessionId, student.StudentId, recognizedStudent.Confidence);
 
                     var attendanceRecord = new AttendanceRecord
                     {
@@ -320,6 +320,8 @@ public class AttendanceService : IAttendanceService
                     };
 
                     await _unitOfWork.AttendanceRecords.AddAsync(attendanceRecord);
+                    _logger.LogInformation("AttendanceRecord added to context (not yet saved): AttendanceId {AttendanceId}",
+                        attendanceRecord.AttendanceId);
                 }
                 else
                 {
@@ -340,13 +342,35 @@ public class AttendanceService : IAttendanceService
 
             try
             {
+                _logger.LogInformation("Attempting to save {Count} new attendance record(s) to database for Session {SessionId}",
+                    recognizedStudents.Count(s => s.IsNewRecord), sessionId);
+
                 var savedCount = await _unitOfWork.SaveChangesAsync();
-                _logger.LogInformation("Successfully saved {SavedCount} attendance record(s) for Session {SessionId}",
+
+                _logger.LogInformation("✅ Successfully saved {SavedCount} entity change(s) to database for Session {SessionId}",
                     savedCount, sessionId);
+
+                // Verify records were actually saved by querying back
+                var verifyRecords = await _unitOfWork.AttendanceRecords
+                    .GetQueryable()
+                    .Where(a => a.SessionId == sessionId)
+                    .CountAsync();
+
+                _logger.LogInformation("✅ Verification: Session {SessionId} now has {TotalRecords} total attendance record(s) in database",
+                    sessionId, verifyRecords);
             }
             catch (Exception saveEx)
             {
-                _logger.LogError(saveEx, "Failed to save attendance records for Session {SessionId}", sessionId);
+                _logger.LogError(saveEx, "❌ Failed to save attendance records for Session {SessionId}. Exception: {ExceptionType}",
+                    sessionId, saveEx.GetType().Name);
+                _logger.LogError("Exception details: {Message}\nStackTrace: {StackTrace}",
+                    saveEx.Message, saveEx.StackTrace);
+
+                if (saveEx.InnerException != null)
+                {
+                    _logger.LogError("Inner exception: {InnerMessage}", saveEx.InnerException.Message);
+                }
+
                 return new RecognitionResponse
                 {
                     Success = false,

@@ -304,22 +304,8 @@ def recognize_faces():
                 total_faces_detected=0
             ).dict()), 400
         
-        # Auto-sync class database if needed
-        if class_id:
-            from config.settings import get_class_database_path
-            class_db_path = get_class_database_path(class_id)
-            
-            # Check if database is empty
-            has_images = any(
-                f.name.lower().endswith(('.jpg', '.jpeg', '.png'))
-                for f in class_db_path.rglob('*')
-                if f.is_file()
-            )
-            
-            if not has_images and supabase_service.is_enabled():
-                logger.info(f"📥 Auto-syncing class {class_id} from Supabase...")
-                student_count, message = supabase_service.sync_class_students(class_id, class_db_path)
-                logger.info(f"✅ {message}")
+        # Note: Database sync removed from here to avoid latency on first capture
+        # Database should be synced at startup or via manual sync endpoint
         
         # Recognize faces
         result = face_service.recognize_faces(
@@ -432,7 +418,105 @@ def get_cache_stats():
 
 
 # ============================================================================
-# ENDPOINT 7: Clear Cache
+# ENDPOINT 7: Sync Database from Supabase
+# ============================================================================
+
+@app.route('/api/database/sync', methods=['POST'])
+def sync_database():
+    """Manually sync class database from Supabase"""
+    try:
+        # Get class ID from request
+        class_id = request.json.get('classId') if request.json else None
+        
+        if not class_id:
+            return jsonify({
+                "success": False,
+                "error": "classId is required"
+            }), 400
+        
+        if not supabase_service.is_enabled():
+            return jsonify({
+                "success": False,
+                "error": "Supabase is not enabled"
+            }), 400
+        
+        # Perform sync
+        from config.settings import get_class_database_path
+        class_db_path = get_class_database_path(class_id)
+        
+        logger.info(f"📥 Manual sync requested for class {class_id}")
+        student_count, message = supabase_service.sync_class_students(class_id, class_db_path)
+        
+        # Reload embeddings cache
+        face_service.embedding_cache._load_all_embeddings()
+        
+        return jsonify({
+            "success": True,
+            "message": message,
+            "student_count": student_count,
+            "class_id": class_id
+        }), 200
+    
+    except Exception as e:
+        logger.error(f"Error syncing database: {e}")
+        return jsonify({
+            "success": False,
+            "error": str(e)
+        }), 500
+
+
+# ============================================================================
+# ENDPOINT 8: Cleanup Class Database
+# ============================================================================
+
+@app.route('/api/database/cleanup', methods=['POST'])
+def cleanup_database():
+    """Delete class database from local storage"""
+    try:
+        # Get class ID from request
+        class_id = request.json.get('classId') if request.json else None
+        
+        if not class_id:
+            return jsonify({
+                "success": False,
+                "error": "classId is required"
+            }), 400
+        
+        # Delete class database folder
+        from config.settings import get_class_database_path
+        import shutil
+        
+        class_db_path = get_class_database_path(class_id)
+        
+        if class_db_path.exists():
+            shutil.rmtree(class_db_path)
+            logger.info(f"🗑️  Deleted class database: {class_db_path}")
+            
+            # Clear embeddings cache for this class
+            face_service.embedding_cache.clear_cache()
+            
+            return jsonify({
+                "success": True,
+                "message": f"Cleaned up database for class {class_id}",
+                "deleted_path": str(class_db_path)
+            }), 200
+        else:
+            return jsonify({
+                "success": True,
+                "message": f"No database found for class {class_id}",
+                "deleted_path": None
+            }), 200
+    
+    except Exception as e:
+        logger.error(f"Error cleaning up database: {e}")
+        return jsonify({
+            "success": False,
+            "error": str(e)
+        }), 500
+
+
+# ============================================================================
+# ENDPOINT 9: Clear Cache
 # ============================================================================
 
 @app.route('/api/cache/clear', methods=['POST'])
@@ -480,10 +564,68 @@ def internal_error(error):
 
 
 # ============================================================================
+# Startup Initialization
+# ============================================================================
+
+def initialize_database_on_startup():
+    """
+    Initialize database on server startup
+    Sync from Supabase if local database is empty
+    """
+    try:
+        logger.info("="*60)
+        logger.info("🔄 Checking local face database...")
+        
+        # Check face_database folder
+        face_db_path = settings.DATABASE_FOLDER
+        
+        # Count existing images
+        has_images = any(
+            f.name.lower().endswith(('.jpg', '.jpeg', '.png'))
+            for f in face_db_path.rglob('*')
+            if f.is_file()
+        )
+        
+        if has_images:
+            logger.info(f"✅ Local database found with images")
+            return
+        
+        # Database is empty - try to sync from Supabase
+        if supabase_service.is_enabled():
+            logger.info(f"📥 Local database empty - syncing from Supabase...")
+            
+            # Try to sync default class database
+            # You can add class_id from environment variable or config
+            default_class_id = "default"  # or from settings
+            
+            student_count, message = supabase_service.sync_class_students(
+                default_class_id, 
+                face_db_path
+            )
+            
+            if student_count > 0:
+                logger.info(f"✅ {message}")
+                # Reload embeddings
+                face_service.embedding_cache._load_all_embeddings()
+            else:
+                logger.warning(f"⚠️  No students synced from Supabase")
+        else:
+            logger.warning(f"⚠️  Local database empty and Supabase not enabled")
+        
+        logger.info("="*60)
+    
+    except Exception as e:
+        logger.error(f"❌ Error initializing database: {e}")
+
+
+# ============================================================================
 # Main Entry Point
 # ============================================================================
 
 if __name__ == '__main__':
+    # Initialize database on startup
+    initialize_database_on_startup()
+    
     logger.info("="*60)
     logger.info("✅ All services initialized successfully")
     logger.info(f"🌐 Starting Flask server on {settings.FLASK_HOST}:{settings.FLASK_PORT}")

@@ -8,6 +8,8 @@ using FaceIdBackend.Infrastructure.Services;
 using FaceIdBackend.Infrastructure.Services.Interfaces;
 using FaceIdBackend.Infrastructure.UnitOfWork;
 using Microsoft.EntityFrameworkCore;
+using Hangfire;
+using Hangfire.SqlServer;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -51,9 +53,34 @@ builder.Services.AddScoped<IClassService, ClassService>();
 builder.Services.AddScoped<ISessionService, SessionService>();
 builder.Services.AddScoped<IAttendanceService, AttendanceService>();
 builder.Services.AddScoped<IDashboardService, DashboardService>();
+builder.Services.AddScoped<IFaceDatabaseSyncService, FaceDatabaseSyncService>();
+builder.Services.AddScoped<IAttendanceSessionJobScheduler, AttendanceSessionJobScheduler>();
+builder.Services.AddScoped<ICacheSyncService, CacheSyncService>();
 
 // AutoMapper
 builder.Services.AddAutoMapper(typeof(MappingProfile));
+
+// Hangfire Configuration
+builder.Services.AddHangfire(configuration => configuration
+    .SetDataCompatibilityLevel(CompatibilityLevel.Version_180)
+    .UseSimpleAssemblyNameTypeSerializer()
+    .UseRecommendedSerializerSettings()
+    .UseSqlServerStorage(builder.Configuration.GetConnectionString("DefaultConnection"), new SqlServerStorageOptions
+    {
+        CommandBatchMaxTimeout = TimeSpan.FromMinutes(5),
+        SlidingInvisibilityTimeout = TimeSpan.FromMinutes(5),
+        QueuePollInterval = TimeSpan.Zero,
+        UseRecommendedIsolationLevel = true,
+        DisableGlobalLocks = true
+    }));
+
+// Add Hangfire server
+builder.Services.AddHangfireServer(options =>
+{
+    options.ServerName = "FaceAttendanceServer";
+    options.WorkerCount = 5; // Number of background workers
+    options.SchedulePollingInterval = TimeSpan.FromSeconds(15);
+});
 
 // CORS
 builder.Services.AddCors(options =>
@@ -107,6 +134,14 @@ app.UseCors("AllowAll");
 
 // Serve static files (for uploaded photos)
 app.UseStaticFiles();
+
+// Hangfire Dashboard
+app.UseHangfireDashboard("/hangfire", new DashboardOptions
+{
+    Authorization = new[] { new FaceIdBackend.HangfireAuthorizationFilter() },
+    DashboardTitle = "Face Attendance System - Background Jobs",
+    StatsPollingInterval = 2000
+});
 
 app.UseHttpsRedirection();
 

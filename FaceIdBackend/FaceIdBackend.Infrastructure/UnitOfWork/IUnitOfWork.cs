@@ -10,6 +10,7 @@ public interface IUnitOfWork : IDisposable
     IRepository<ClassEnrollment> ClassEnrollments { get; }
     IRepository<AttendanceSession> AttendanceSessions { get; }
     IRepository<AttendanceRecord> AttendanceRecords { get; }
+    IRepository<SessionSnapshot> SessionSnapshots { get; }
 
     Task<int> SaveChangesAsync();
     Task BeginTransactionAsync();

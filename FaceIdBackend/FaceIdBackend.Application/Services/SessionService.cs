@@ -17,15 +17,18 @@ public class SessionService : ISessionService
 {
     private readonly IUnitOfWork _unitOfWork;
     private readonly ISupabaseStorageService _supabaseStorage;
+    private readonly IAttendanceSessionJobScheduler _jobScheduler;
     private readonly ILogger<SessionService> _logger;
 
     public SessionService(
         IUnitOfWork unitOfWork,
         ISupabaseStorageService supabaseStorage,
+        IAttendanceSessionJobScheduler jobScheduler,
         ILogger<SessionService> logger)
     {
         _unitOfWork = unitOfWork;
         _supabaseStorage = supabaseStorage;
+        _jobScheduler = jobScheduler;
         _logger = logger;
     }
 
@@ -76,6 +79,52 @@ public class SessionService : ISessionService
                 _logger.LogWarning(ex, "Failed to create Supabase folder structure for session {SessionId}",
                     session.SessionId);
             }
+        }
+
+        // Schedule automatic database preload and cleanup jobs
+        try
+        {
+            // Calculate session end time (default to 2 hours after start if not provided)
+            var sessionEndTime = session.SessionEndTime ?? session.SessionStartTime.AddHours(2);
+
+            // Schedule preload job (10 minutes before session start)
+            var preloadJobId = _jobScheduler.SchedulePreloadJob(
+                session.SessionId,
+                classId,
+                session.SessionStartTime,
+                preloadMinutesBefore: 10
+            );
+
+            // Schedule cleanup job (30 minutes after session end)
+            var cleanupJobId = _jobScheduler.ScheduleCleanupJob(
+                session.SessionId,
+                classId,
+                sessionEndTime,
+                cleanupMinutesAfter: 30
+            );
+
+            // Store job IDs in session notes for tracking
+            var jobInfo = new
+            {
+                PreloadJobId = preloadJobId,
+                CleanupJobId = cleanupJobId,
+                PreloadTime = session.SessionStartTime.AddMinutes(-10),
+                CleanupTime = sessionEndTime.AddMinutes(30)
+            };
+
+            session.Notes = JsonSerializer.Serialize(jobInfo);
+            _unitOfWork.AttendanceSessions.Update(session);
+            await _unitOfWork.SaveChangesAsync();
+
+            _logger.LogInformation(
+                "✅ Scheduled background jobs for session {SessionId}: Preload={PreloadJobId}, Cleanup={CleanupJobId}",
+                session.SessionId, preloadJobId, cleanupJobId
+            );
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "❌ Failed to schedule background jobs for session {SessionId}", session.SessionId);
+            // Don't throw - session creation succeeded, job scheduling is optional
         }
 
         _logger.LogInformation("Successfully created session {SessionId}", session.SessionId);
@@ -161,7 +210,13 @@ public class SessionService : ISessionService
     {
         _logger.LogInformation("Completing session {SessionId}", sessionId);
 
-        var session = await _unitOfWork.AttendanceSessions.GetByIdAsync(sessionId);
+        var session = await _unitOfWork.AttendanceSessions
+            .GetQueryable()
+            .Include(s => s.Class)
+            .Include(s => s.AttendanceRecords)
+                .ThenInclude(r => r.Student)
+            .FirstOrDefaultAsync(s => s.SessionId == sessionId);
+
         if (session == null)
             throw new KeyNotFoundException($"Session with ID {sessionId} not found");
 
@@ -171,10 +226,157 @@ public class SessionService : ISessionService
         session.SessionEndTime = TimezoneHelper.GetUtcNowForStorage();
         session.Status = "Completed";
 
+        // Generate Session Snapshot for historical record
+        try
+        {
+            var snapshot = await GenerateSessionSnapshotAsync(session);
+            await _unitOfWork.SessionSnapshots.AddAsync(snapshot);
+
+            _logger.LogInformation(
+                "✅ Generated session snapshot {SnapshotId} for session {SessionId}. Present: {Present}/{Total}",
+                snapshot.SnapshotId, sessionId, snapshot.PresentCount, snapshot.TotalStudents
+            );
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "❌ Failed to generate session snapshot for session {SessionId}", sessionId);
+            // Don't throw - session completion should succeed even if snapshot fails
+        }
+
         _unitOfWork.AttendanceSessions.Update(session);
         await _unitOfWork.SaveChangesAsync();
 
         _logger.LogInformation("Successfully completed session {SessionId}", sessionId);
+    }
+
+    private async Task<SessionSnapshot> GenerateSessionSnapshotAsync(AttendanceSession session)
+    {
+        _logger.LogInformation("Generating snapshot for session {SessionId}", session.SessionId);
+
+        var records = session.AttendanceRecords.ToList();
+        var totalEnrolled = session.Class.ClassEnrollments.Count(e => e.Status == "Active");
+
+        var presentCount = records.Count(r => r.Status == "Present");
+        var absentCount = totalEnrolled - presentCount;
+        var lateCount = records.Count(r => r.Status == "Late");
+
+        var attendanceRate = totalEnrolled > 0 ? (decimal)presentCount / totalEnrolled * 100 : 0;
+
+        var sessionDuration = session.SessionEndTime.HasValue
+            ? session.SessionEndTime.Value - session.SessionStartTime
+            : TimeSpan.Zero;
+
+        // Serialize attendance records
+        var recordsData = records.Select(r => new
+        {
+            StudentId = r.StudentId,
+            StudentNumber = r.Student.StudentNumber,
+            StudentName = $"{r.Student.FirstName} {r.Student.LastName}",
+            Status = r.Status,
+            CheckInTime = r.CheckInTime,
+            ConfidenceScore = r.ConfidenceScore,
+            IsManualOverride = r.IsManualOverride,
+            Notes = r.Notes
+        }).ToList();
+
+        var attendanceRecordsJson = JsonSerializer.Serialize(recordsData, new JsonSerializerOptions
+        {
+            WriteIndented = true
+        });
+
+        // Serialize session metadata
+        var metadata = new
+        {
+            ClassName = session.Class.ClassName,
+            ClassCode = session.Class.ClassCode,
+            SessionDate = session.SessionDate,
+            Location = session.Location,
+            TotalEnrolled = totalEnrolled
+        };
+
+        var metadataJson = JsonSerializer.Serialize(metadata, new JsonSerializerOptions
+        {
+            WriteIndented = true
+        });
+
+        // Get captured images folder path from Supabase
+        string? capturedImagesFolder = null;
+        if (_supabaseStorage.IsEnabled())
+        {
+            try
+            {
+                capturedImagesFolder = $"sessions/{session.SessionDate:yyyy-MM-dd}/{session.SessionId}/captured";
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Could not determine captured images folder path");
+            }
+        }
+
+        var snapshot = new SessionSnapshot
+        {
+            SnapshotId = Guid.NewGuid(),
+            SessionId = session.SessionId,
+            TotalStudents = totalEnrolled,
+            PresentCount = presentCount,
+            AbsentCount = absentCount,
+            LateCount = lateCount,
+            AttendanceRate = Math.Round(attendanceRate, 2),
+            CapturedImagesFolder = capturedImagesFolder,
+            AttendanceRecordsJson = attendanceRecordsJson,
+            SessionMetadataJson = metadataJson,
+            GeneratedAt = TimezoneHelper.GetUtcNowForStorage(),
+            SessionStartTime = session.SessionStartTime,
+            SessionEndTime = session.SessionEndTime,
+            SessionDuration = sessionDuration
+        };
+
+        // Upload snapshot to Supabase as JSON
+        if (_supabaseStorage.IsEnabled())
+        {
+            try
+            {
+                var snapshotJson = JsonSerializer.Serialize(new
+                {
+                    snapshot.SnapshotId,
+                    snapshot.SessionId,
+                    snapshot.TotalStudents,
+                    snapshot.PresentCount,
+                    snapshot.AbsentCount,
+                    snapshot.LateCount,
+                    snapshot.AttendanceRate,
+                    snapshot.SessionStartTime,
+                    snapshot.SessionEndTime,
+                    snapshot.SessionDuration,
+                    AttendanceRecords = recordsData,
+                    Metadata = metadata,
+                    GeneratedAt = snapshot.GeneratedAt
+                }, new JsonSerializerOptions
+                {
+                    WriteIndented = true
+                });
+
+                var jsonBytes = Encoding.UTF8.GetBytes(snapshotJson);
+                var fileName = $"snapshot_{session.SessionId}_{DateTime.UtcNow:yyyyMMddHHmmss}.json";
+
+                await _supabaseStorage.UploadToSessionAsync(
+                    session.SessionId,
+                    session.SessionDate,
+                    jsonBytes,
+                    fileName,
+                    "snapshots",
+                    "application/json"
+                );
+
+                _logger.LogInformation("Uploaded snapshot JSON to Supabase: {FileName}", fileName);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Failed to upload snapshot to Supabase");
+            }
+        }
+
+        return snapshot;
     }
 
     public async Task DeleteSessionAsync(Guid sessionId)
@@ -184,6 +386,17 @@ public class SessionService : ISessionService
         var session = await _unitOfWork.AttendanceSessions.GetByIdAsync(sessionId);
         if (session == null)
             throw new KeyNotFoundException($"Session with ID {sessionId} not found");
+
+        // Cancel scheduled Hangfire jobs
+        try
+        {
+            var cancelledCount = _jobScheduler.CancelSessionJobs(sessionId);
+            _logger.LogInformation("Cancelled {Count} scheduled job(s) for session {SessionId}", cancelledCount, sessionId);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Failed to cancel scheduled jobs for session {SessionId}", sessionId);
+        }
 
         // Delete from Supabase if enabled
         if (_supabaseStorage.IsEnabled())
