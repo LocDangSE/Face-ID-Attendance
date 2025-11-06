@@ -36,6 +36,8 @@ const TakeAttendance = () => {
     const canvasRef = useRef(null);
     const detectionIntervalRef = useRef(null);
     const captureTimeoutRef = useRef(null);
+    const lastCaptureTimeRef = useRef(0);
+    const isProcessingRef = useRef(false); // Prevent concurrent API calls
 
     // Load BlazeFace model on mount
     useEffect(() => {
@@ -230,6 +232,10 @@ const TakeAttendance = () => {
             captureTimeoutRef.current = null;
         }
 
+        // Reset cooldown and processing flags
+        lastCaptureTimeRef.current = 0;
+        isProcessingRef.current = false;
+
         // Clear canvas
         if (canvasRef.current) {
             const ctx = canvasRef.current.getContext('2d');
@@ -246,6 +252,23 @@ const TakeAttendance = () => {
         console.log('   - autoDetecting:', autoDetecting);
         console.log('   - capturing:', capturing);
 
+        // Check if already processing a request
+        if (isProcessingRef.current) {
+            console.log('⏳ Already processing a request, skipping...');
+            return;
+        }
+
+        // Cooldown period: 3 seconds between captures in auto mode
+        const COOLDOWN_PERIOD = 3000; // 3 seconds
+        const now = Date.now();
+        const timeSinceLastCapture = now - lastCaptureTimeRef.current;
+
+        if (autoDetecting && timeSinceLastCapture < COOLDOWN_PERIOD) {
+            const remainingTime = Math.ceil((COOLDOWN_PERIOD - timeSinceLastCapture) / 1000);
+            console.log(`⏱️ Cooldown active: ${remainingTime}s remaining`);
+            return;
+        }
+
         if (!selectedSessionId) {
             console.error('❌ No session selected!');
             toast.error('Please select a session first');
@@ -258,7 +281,9 @@ const TakeAttendance = () => {
             return;
         }
 
-        console.log('✅ Validation passed, setting capturing=true');
+        console.log('✅ Validation passed, setting flags');
+        isProcessingRef.current = true;
+        lastCaptureTimeRef.current = now;
         setCapturing(true);
 
         try {
@@ -284,26 +309,40 @@ const TakeAttendance = () => {
 
             const response = await attendanceAPI.recognizeFace(formData);
             console.log('📥 API Response:', response.data);
+            console.log('   - success:', response.data.success);
+            console.log('   - recognizedStudents:', response.data.recognizedStudents);
+            console.log('   - recognizedStudents length:', response.data.recognizedStudents?.length);
 
             if (response.data.success) {
                 if (response.data.recognizedStudents && response.data.recognizedStudents.length > 0) {
+                    console.log('👥 Processing recognized students...');
                     const newStudents = response.data.recognizedStudents.filter(
                         student => !recognizedStudents.has(student.studentId)
                     );
+                    console.log('   - Previously recognized:', Array.from(recognizedStudents));
+                    console.log('   - New students found:', newStudents.length);
 
                     if (newStudents.length > 0) {
+                        console.log('✅ New students to mark:', newStudents.map(s => s.name));
                         toast.success(`✅ Recognized: ${newStudents.map(s => s.name).join(', ')}`);
 
                         // Track recognized students to avoid duplicates
                         setRecognizedStudents(prev => {
                             const updated = new Set(prev);
                             newStudents.forEach(s => updated.add(s.studentId));
+                            console.log('📝 Updated recognized students set:', Array.from(updated));
                             return updated;
                         });
 
+                        console.log('🔄 Fetching updated attendance records...');
                         fetchAttendanceRecords();
+
+                        // Reset detection state to prevent immediate re-trigger
+                        setDetectionCount(0);
+                        setFaceDetected(false);
+                        console.log('🔄 Reset detection state after successful recognition');
                     } else {
-                        console.log('Student(s) already marked');
+                        console.log('⚠️ Student(s) already marked - skipping');
                     }
                 } else if (!autoDetecting) {
                     toast.warning('No faces recognized');
@@ -321,8 +360,10 @@ const TakeAttendance = () => {
             }
         } finally {
             setCapturing(false);
+            isProcessingRef.current = false;
+            console.log('✅ Request completed, processing flag reset');
         }
-    }, [selectedSessionId, autoDetecting, recognizedStudents]);
+    }, [selectedSessionId, autoDetecting, recognizedStudents, fetchAttendanceRecords]);
 
     // Auto-capture when face is detected continuously
     useEffect(() => {
@@ -581,7 +622,7 @@ const TakeAttendance = () => {
                             </h2>
 
                             {/* Status Indicators */}
-                            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-6">
+                            <div className="grid grid-cols-1 sm:grid-cols-4 gap-4 mb-6">
                                 <div className={`p-4 rounded-lg border-2 ${model ? 'bg-green-50 border-green-300' : 'bg-gray-50 border-gray-300'}`}>
                                     <div className="flex items-center">
                                         <div className={`w-3 h-3 rounded-full mr-2 ${model ? 'bg-green-500' : 'bg-gray-400'}`}></div>
@@ -598,6 +639,12 @@ const TakeAttendance = () => {
                                     <div className="flex items-center">
                                         <div className={`w-3 h-3 rounded-full mr-2 ${faceDetected ? 'bg-green-500 animate-pulse' : 'bg-gray-400'}`}></div>
                                         <span className="text-sm font-semibold">Face: {faceDetected ? 'Detected' : 'Not Detected'}</span>
+                                    </div>
+                                </div>
+                                <div className={`p-4 rounded-lg border-2 ${capturing ? 'bg-yellow-50 border-yellow-300' : 'bg-gray-50 border-gray-300'}`}>
+                                    <div className="flex items-center">
+                                        <div className={`w-3 h-3 rounded-full mr-2 ${capturing ? 'bg-yellow-500 animate-pulse' : 'bg-gray-400'}`}></div>
+                                        <span className="text-sm font-semibold">Status: {capturing ? 'Processing...' : 'Ready'}</span>
                                     </div>
                                 </div>
                             </div>
