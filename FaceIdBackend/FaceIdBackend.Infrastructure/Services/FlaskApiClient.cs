@@ -14,7 +14,7 @@ namespace FaceIdBackend.Infrastructure.Services;
 public interface IFlaskApiClient
 {
     Task<FlaskRegisterResponse> RegisterStudentAsync(Guid studentId, IFormFile imageFile, CancellationToken cancellationToken = default);
-    Task<FlaskRecognizeResponse> AnalyzeFacesAsync(Guid classId, IFormFile imageFile, CancellationToken cancellationToken = default);
+    Task<FlaskRecognizeResponse> AnalyzeFacesAsync(Guid sessionId, Guid classId, IFormFile imageFile, CancellationToken cancellationToken = default);
     Task<bool> HealthCheckAsync(CancellationToken cancellationToken = default);
 }
 
@@ -78,7 +78,7 @@ public class FlaskApiClient : IFlaskApiClient
         });
     }
 
-    public async Task<FlaskRecognizeResponse> AnalyzeFacesAsync(Guid classId, IFormFile imageFile, CancellationToken cancellationToken = default)
+    public async Task<FlaskRecognizeResponse> AnalyzeFacesAsync(Guid sessionId, Guid classId, IFormFile imageFile, CancellationToken cancellationToken = default)
     {
         return await _retryPolicy.ExecuteAsync(async () =>
         {
@@ -87,10 +87,12 @@ public class FlaskApiClient : IFlaskApiClient
             var streamContent = new StreamContent(stream);
             streamContent.Headers.ContentType = new MediaTypeHeaderValue(imageFile.ContentType);
             content.Add(streamContent, "image", imageFile.FileName);
+            // Include both sessionId and classId so Flask can track per attendance session
+            content.Add(new StringContent(sessionId.ToString()), "sessionId");
             content.Add(new StringContent(classId.ToString()), "classId");
 
             if (_settings.LogRequests)
-                _logger.LogDebug("Flask AnalyzeFaces request: classId={ClassId}, filename={FileName}", classId, imageFile.FileName);
+                _logger.LogDebug("Flask AnalyzeFaces request: sessionId={SessionId}, classId={ClassId}, filename={FileName}", sessionId, classId, imageFile.FileName);
 
             var response = await _httpClient.PostAsync("/api/face/recognize", content, cancellationToken);
             var json = await response.Content.ReadAsStringAsync(cancellationToken);

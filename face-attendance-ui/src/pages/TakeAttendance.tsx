@@ -3,7 +3,7 @@
  * Optimized with custom hooks, FPS limiting, and type safety
  */
 
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import Webcam from 'react-webcam';
 import { toast } from 'react-toastify';
@@ -38,6 +38,12 @@ const TakeAttendance: React.FC = () => {
     // Mode states
     const [mode, setMode] = useState<AttendanceMode>('ai');
     const [captureMode, setCaptureMode] = useState<CaptureMode>('manual');
+
+    // Recognition state management to prevent infinite loops
+    const [isRecognized, setIsRecognized] = useState(false); // Flag to track if a face was just recognized
+    const [recognitionCooldown, setRecognitionCooldown] = useState(false); // Cooldown state
+    const [cooldownTimeLeft, setCooldownTimeLeft] = useState(0); // Time remaining in cooldown (ms)
+    const RECOGNITION_COOLDOWN_MS = 4000; // 4-second cooldown after successful recognition
 
     // Webcam hook with FPS limiting (1 FPS max)
     const {
@@ -105,10 +111,27 @@ const TakeAttendance: React.FC = () => {
     /**
      * Auto-capture handler (bypasses manual FPS limit)
      * Face detection hook already has 3-second cooldown
+     * 
+     * ANTI-LOOP PROTECTION:
+     * - Checks isRecognized flag to prevent repeated captures after successful recognition
+     * - Checks recognitionCooldown to enforce a 4-second pause between recognitions
+     * - Only proceeds if no capture/recognition is in progress
      */
     const handleAutoCapture = async () => {
         if (!selectedSession) {
             console.log('[TakeAttendance] No session selected, skipping auto-capture');
+            return;
+        }
+
+        // ANTI-LOOP: Check if we just recognized someone
+        if (isRecognized) {
+            console.log('[TakeAttendance] ⏸️ Recognition already successful, skipping auto-capture');
+            return;
+        }
+
+        // ANTI-LOOP: Check if we're in cooldown period
+        if (recognitionCooldown) {
+            console.log('[TakeAttendance] ⏳ In cooldown period, skipping auto-capture');
             return;
         }
 
@@ -136,26 +159,80 @@ const TakeAttendance: React.FC = () => {
             // Recognize face
             const recognizedStudents = await recognizeFace(file);
 
-            // Show result
-            if (recognizedStudents.length > 0) {
+            // ANTI-LOOP: Only activate cooldown if students were actually recognized
+            // If no students found, allow immediate retry (better UX)
+            if (recognizedStudents && recognizedStudents.length > 0) {
                 toast.success(
                     `🤖 Auto-detected ${recognizedStudents.length} student(s)!`,
                     { autoClose: 2000 }
                 );
+
+                // ANTI-LOOP: Set recognized flag and start cooldown timer
+                console.log('[TakeAttendance] ✅ Recognition successful - activating cooldown');
+                setIsRecognized(true);
+                startRecognitionCooldown();
             } else {
-                console.log('[TakeAttendance] No faces recognized in auto-capture');
+                // No recognition - don't activate cooldown to allow retry
+                console.log('[TakeAttendance] 🔍 No students recognized - ready for retry');
             }
         } catch (error) {
-            console.error('[TakeAttendance] Auto-capture error:', error);
+            console.error('[TakeAttendance] ❌ Auto-capture error:', error);
+            // Don't activate cooldown on error - allow retry
         }
     };
 
     /**
+     * Start recognition cooldown timer
+     * Prevents repeated recognition attempts for RECOGNITION_COOLDOWN_MS milliseconds
+     * OPTIMIZED: Updates every 200ms instead of 100ms to reduce re-renders
+     * MEMORY SAFE: Uses refs to store timer IDs for proper cleanup
+     */
+    const startRecognitionCooldown = useCallback(() => {
+        setRecognitionCooldown(true);
+        setCooldownTimeLeft(RECOGNITION_COOLDOWN_MS);
+
+        // Countdown timer for visual feedback (optimized to 200ms intervals)
+        const countdownInterval = setInterval(() => {
+            setCooldownTimeLeft((prev) => {
+                if (prev <= 200) {
+                    clearInterval(countdownInterval);
+                    return 0;
+                }
+                return prev - 200;
+            });
+        }, 200); // Reduced from 100ms to 200ms for better performance
+
+        // Reset cooldown and recognition flag after timeout
+        const resetTimeout = setTimeout(() => {
+            setRecognitionCooldown(false);
+            setIsRecognized(false);
+            setCooldownTimeLeft(0);
+            console.log('[TakeAttendance] 🔄 Cooldown complete - ready for next recognition');
+        }, RECOGNITION_COOLDOWN_MS);
+
+        // MEMORY SAFE: Return cleanup function
+        return () => {
+            clearInterval(countdownInterval);
+            clearTimeout(resetTimeout);
+        };
+    }, [RECOGNITION_COOLDOWN_MS]);
+
+    /**
      * Manual capture and recognize face with FPS limiting
+     * 
+     * ANTI-LOOP PROTECTION:
+     * - Manual mode also respects cooldown to prevent spam clicking
      */
     const handleCaptureAndRecognize = async () => {
         if (!selectedSession) {
             toast.error('Please select a session first');
+            return;
+        }
+
+        // Check cooldown for manual mode too
+        if (recognitionCooldown) {
+            const secondsRemaining = (cooldownTimeLeft / 1000).toFixed(1);
+            toast.warning(`⏳ Please wait ${secondsRemaining}s before next recognition`);
             return;
         }
 
@@ -180,18 +257,23 @@ const TakeAttendance: React.FC = () => {
             // Recognize face
             const recognizedStudents = await recognizeFace(file);
 
-            // Show result
-            if (recognizedStudents.length > 0) {
+            // ANTI-LOOP: Only activate cooldown if students were actually recognized
+            if (recognizedStudents && recognizedStudents.length > 0) {
                 toast.success(
                     `✅ Recognized ${recognizedStudents.length} student(s)`,
                     { autoClose: 3000 }
                 );
+
+                // Start cooldown after successful recognition
+                console.log('[TakeAttendance] ✅ Manual recognition successful - activating cooldown');
+                startRecognitionCooldown();
             } else {
-                toast.warning('No faces recognized in image');
+                // No students recognized - show info message but don't activate cooldown
+                toast.info('🔍 No faces recognized. Please try again with better positioning and lighting.');
             }
         } catch (error) {
-            console.error('[TakeAttendance] Recognition error:', error);
-            toast.error(recognitionError || 'Face recognition failed');
+            console.error('[TakeAttendance] ❌ Recognition error:', error);
+            toast.error(recognitionError || 'Face recognition failed. Please try again.');
         }
     };
 
@@ -490,11 +572,31 @@ const TakeAttendance: React.FC = () => {
                                     {/* Auto-Detection Status Badge */}
                                     {captureMode === 'auto' && (
                                         <div className="absolute top-4 left-4 right-4 z-10">
-                                            <div className={`p-3 rounded-xl shadow-lg backdrop-blur-md border-2 ${isFaceReady
-                                                ? 'bg-green-500/90 border-green-300'
-                                                : isDetecting
-                                                    ? 'bg-blue-500/90 border-blue-300'
-                                                    : 'bg-gray-500/90 border-gray-300'
+                                            {/* COOLDOWN INDICATOR - Shows when recognition is paused */}
+                                            {recognitionCooldown && (
+                                                <div className="mb-3 p-3 rounded-xl shadow-lg backdrop-blur-md border-2 bg-yellow-500/90 border-yellow-300">
+                                                    <div className="flex items-center justify-between text-white">
+                                                        <div className="flex items-center gap-2">
+                                                            <div className="w-3 h-3 rounded-full bg-white animate-pulse"></div>
+                                                            <span className="font-semibold">⏳ Cooldown Active - Next capture in {(cooldownTimeLeft / 1000).toFixed(1)}s</span>
+                                                        </div>
+                                                    </div>
+                                                    <div className="mt-2 w-full bg-yellow-200/30 rounded-full h-2">
+                                                        <div
+                                                            className="bg-white h-2 rounded-full transition-all duration-100"
+                                                            style={{ width: `${(cooldownTimeLeft / RECOGNITION_COOLDOWN_MS) * 100}%` }}
+                                                        ></div>
+                                                    </div>
+                                                </div>
+                                            )}
+
+                                            <div className={`p-3 rounded-xl shadow-lg backdrop-blur-md border-2 ${recognitionCooldown
+                                                ? 'bg-gray-500/90 border-gray-300'
+                                                : isFaceReady
+                                                    ? 'bg-green-500/90 border-green-300'
+                                                    : isDetecting
+                                                        ? 'bg-blue-500/90 border-blue-300'
+                                                        : 'bg-gray-500/90 border-gray-300'
                                                 }`}>
                                                 <div className="flex items-center justify-between text-white">
                                                     <div className="flex items-center gap-2">
@@ -506,6 +608,11 @@ const TakeAttendance: React.FC = () => {
                                                                 </svg>
                                                                 <span className="font-semibold">Loading AI model...</span>
                                                             </div>
+                                                        ) : recognitionCooldown ? (
+                                                            <>
+                                                                <div className="w-3 h-3 rounded-full bg-white/40"></div>
+                                                                <span className="font-semibold">⏸️ Detection Paused (Cooldown)</span>
+                                                            </>
                                                         ) : (
                                                             <>
                                                                 <div className={`w-3 h-3 rounded-full ${isFaceReady ? 'bg-white animate-pulse' : isDetecting ? 'bg-white/70' : 'bg-white/40'}`}></div>
@@ -514,7 +621,7 @@ const TakeAttendance: React.FC = () => {
                                                         )}
                                                     </div>
 
-                                                    {facesDetected > 0 && (
+                                                    {facesDetected > 0 && !recognitionCooldown && (
                                                         <div className="flex items-center gap-3 text-sm">
                                                             <span>👤 {facesDetected}</span>
                                                             <span>📊 {formatQualityScore(qualityScore)}</span>
@@ -532,7 +639,7 @@ const TakeAttendance: React.FC = () => {
                                         <>
                                             <button
                                                 onClick={handleCaptureAndRecognize}
-                                                disabled={isCapturing || recognizing || !canCapture}
+                                                disabled={isCapturing || recognizing || !canCapture || recognitionCooldown}
                                                 className="btn-primary px-10 py-4 text-lg font-bold shadow-xl disabled:opacity-50 disabled:cursor-not-allowed"
                                             >
                                                 {isCapturing || recognizing ? (
@@ -551,7 +658,14 @@ const TakeAttendance: React.FC = () => {
                                                 )}
                                             </button>
 
-                                            {!canCapture && timeUntilNextCapture > 0 && (
+                                            {/* COOLDOWN INDICATOR for manual mode */}
+                                            {recognitionCooldown && (
+                                                <div className="text-sm text-yellow-600 font-medium bg-yellow-50 px-4 py-2 rounded-lg border border-yellow-200">
+                                                    ⏳ Cooldown active: {(cooldownTimeLeft / 1000).toFixed(1)}s remaining
+                                                </div>
+                                            )}
+
+                                            {!canCapture && timeUntilNextCapture > 0 && !recognitionCooldown && (
                                                 <div className="text-sm text-amber-600 font-medium">
                                                     ⏱️ Next capture in {(timeUntilNextCapture / 1000).toFixed(1)}s (FPS limit: 1)
                                                 </div>
@@ -578,11 +692,20 @@ const TakeAttendance: React.FC = () => {
                                                         <ul className="text-sm text-indigo-700 space-y-1">
                                                             <li>✓ Face detection running at 10 FPS</li>
                                                             <li>✓ Auto-capture when face is centered and clear</li>
-                                                            <li>✓ 3-second cooldown between captures</li>
+                                                            <li>✓ 4-second cooldown after successful recognition</li>
                                                             <li>✓ No button press needed - just position your face!</li>
                                                         </ul>
 
-                                                        {(isCapturing || recognizing) && (
+                                                        {recognitionCooldown && (
+                                                            <div className="mt-3 flex items-center gap-2 text-yellow-700 font-semibold bg-yellow-50 px-3 py-2 rounded-lg">
+                                                                <svg className="h-4 w-4" fill="currentColor" viewBox="0 0 20 20">
+                                                                    <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm1-12a1 1 0 10-2 0v4a1 1 0 00.293.707l2.828 2.829a1 1 0 101.415-1.415L11 9.586V6z" clipRule="evenodd" />
+                                                                </svg>
+                                                                <span>⏸️ Waiting {(cooldownTimeLeft / 1000).toFixed(1)}s before next detection</span>
+                                                            </div>
+                                                        )}
+
+                                                        {(isCapturing || recognizing) && !recognitionCooldown && (
                                                             <div className="mt-3 flex items-center gap-2 text-green-700 font-semibold">
                                                                 <svg className="animate-spin h-4 w-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
                                                                     <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>

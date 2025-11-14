@@ -27,7 +27,12 @@ public class HybridFileStorageService : IFileStorageService
     public async Task<string> SaveStudentPhotoAsync(IFormFile file, Guid studentId)
     {
         var extension = Path.GetExtension(file.FileName).ToLowerInvariant();
-        var fileName = $"{studentId}{extension}";
+        var timestamp = DateTime.UtcNow.ToString("yyyyMMdd_HHmmss");
+        var fileName = $"{studentId}_{timestamp}{extension}";
+
+        // Create folder path: students/{studentId}/{fileName}
+        // This matches the Flask structure and keeps photos organized per student
+        var folderPath = $"students/{studentId}";
 
         // Check if Supabase is enabled
         if (!_supabaseStorage.IsEnabled())
@@ -40,8 +45,8 @@ public class HybridFileStorageService : IFileStorageService
         // Upload to Supabase (no fallback)
         try
         {
-            _logger.LogInformation("📤 Uploading student photo {StudentId} to Supabase cloud storage...", studentId);
-            var publicUrl = await _supabaseStorage.UploadFileAsync(file, fileName, "students");
+            _logger.LogInformation("📤 Uploading student photo {StudentId} to Supabase cloud storage at {FolderPath}...", studentId, folderPath);
+            var publicUrl = await _supabaseStorage.UploadFileAsync(file, fileName, folderPath);
             _logger.LogInformation("✅ Successfully uploaded to Supabase: {Url}", publicUrl);
             return publicUrl;
         }

@@ -199,6 +199,15 @@ public class AttendanceService : IAttendanceService
         }).ToList();
     }
 
+    /// <summary>
+    /// Recognize face and mark attendance
+    /// 
+    /// ANTI-LOOP PROTECTION:
+    /// - Loads existing attendance records for the session
+    /// - Checks if student already has attendance marked BEFORE calling Flask
+    /// - Skips students who are already marked present
+    /// - Returns appropriate status for already-attended students
+    /// </summary>
     public async Task<RecognitionResponse> RecognizeFaceAndMarkAttendanceAsync(Guid sessionId, IFormFile image)
     {
         _logger.LogInformation("RecognizeFaceAndMarkAttendanceAsync called for SessionId: {SessionId}", sessionId);
@@ -220,14 +229,24 @@ public class AttendanceService : IAttendanceService
             throw new InvalidOperationException("Session is not in progress");
         }
 
+        // ANTI-LOOP: Pre-load existing attendance records to check for duplicates
+        var existingAttendance = await _unitOfWork.AttendanceRecords
+            .GetQueryable()
+            .Where(a => a.SessionId == sessionId && a.Status == "Present")
+            .Select(a => a.StudentId)
+            .ToListAsync();
+
+        _logger.LogInformation("Session {SessionId} already has {Count} students marked present",
+            sessionId, existingAttendance.Count);
+
         _logger.LogInformation("Calling Flask API for face recognition. ClassId: {ClassId}", session.ClassId);
 
         var recognizedStudents = new List<RecognizedStudentDto>();
 
         try
         {
-            // Use FlaskApiClient to recognize faces
-            var flaskResult = await _flaskApiClient.AnalyzeFacesAsync(session.ClassId, image);
+            // Use FlaskApiClient to recognize faces — pass both sessionId and classId so Flask can track per-session attendance
+            var flaskResult = await _flaskApiClient.AnalyzeFacesAsync(session.SessionId, session.ClassId, image);
             _logger.LogInformation("Flask API response - Success: {Success}, Message: {Message}",
                 flaskResult.Success, flaskResult.Message);
 
@@ -278,6 +297,30 @@ public class AttendanceService : IAttendanceService
                     continue;
                 }
 
+                // ANTI-LOOP: Check if student already marked present in this session
+                if (existingAttendance.Contains(studentId))
+                {
+                    _logger.LogInformation(
+                        "⚠️ ANTI-LOOP: Student {StudentId} already marked present in Session {SessionId}, skipping",
+                        studentId, sessionId);
+
+                    // Add to response with isNewRecord = false to indicate duplicate
+                    var existingStudent = await _unitOfWork.Students.GetByIdAsync(studentId);
+                    if (existingStudent != null)
+                    {
+                        recognizedStudents.Add(new RecognizedStudentDto
+                        {
+                            StudentId = existingStudent.StudentId,
+                            StudentNumber = existingStudent.StudentNumber,
+                            Name = $"{existingStudent.FirstName} {existingStudent.LastName}",
+                            ConfidenceScore = recognizedStudent.Confidence,
+                            CheckInTime = TimezoneHelper.GetUtcNowForStorage(),
+                            IsNewRecord = false  // Already attended
+                        });
+                    }
+                    continue;  // Skip to next student
+                }
+
                 var student = await _unitOfWork.Students.GetByIdAsync(studentId);
                 if (student == null)
                 {
@@ -297,6 +340,7 @@ public class AttendanceService : IAttendanceService
                     continue;
                 }
 
+                // This should always be true now due to pre-check above, but keep for safety
                 var existingRecord = await _unitOfWork.AttendanceRecords
                     .FirstOrDefaultAsync(a => a.SessionId == sessionId && a.StudentId == student.StudentId);
 

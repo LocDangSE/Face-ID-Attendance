@@ -276,8 +276,12 @@ def recognize_faces():
                 total_faces_detected=0
             ).dict()), 400
         
-        # Get class ID (optional)
+        # Get class ID (optional) and session ID (used for per-session tracking)
         class_id = request.form.get('classId')
+        # sessionId should be provided by the caller (frontend or .NET service) so
+        # the recognition service can isolate recognized students per attendance
+        # session. If not provided, generate a new session id for this request.
+        session_id = request.form.get('sessionId') or str(uuid.uuid4())
         
         # Validate file
         file = request.files['image']
@@ -307,10 +311,10 @@ def recognize_faces():
         # Note: Database sync removed from here to avoid latency on first capture
         # Database should be synced at startup or via manual sync endpoint
         
-        # Recognize faces
+        # Recognize faces (pass session_id for per-session tracking)
         result = face_service.recognize_faces(
             image_path=temp_file,
-            session_id=None,
+            session_id=session_id,
             preprocess=True,
             save_results=True
         )
@@ -337,10 +341,12 @@ def recognize_faces():
             for student in result.get('recognized_students', [])
         ]
         
+        # Ensure the response includes the session id we used (result may
+        # already include it, but prefer the canonical session_id variable).
         response = RecognizeFacesResponse(
             success=True,
             message=result.get('message', 'Recognition complete'),
-            session_id=result['session_id'],
+            session_id=result.get('session_id', session_id),
             recognized_students=recognized_students,
             total_faces_detected=result['total_faces_detected'],
             total_recognized=result.get('total_recognized', len(recognized_students)),
@@ -535,6 +541,35 @@ def clear_cache():
     
     except Exception as e:
         logger.error(f"Error clearing cache: {e}")
+        return jsonify({
+            "success": False,
+            "error": str(e)
+        }), 500
+
+
+# ============================================================================
+# ENDPOINT 10: Clear Session Tracking (ANTI-LOOP)
+# ============================================================================
+
+@app.route('/api/session/clear-tracking', methods=['POST'])
+def clear_session_tracking():
+    """
+    Clear session recognition tracking to reset attendance loop protection
+    Useful when restarting a session or testing
+    """
+    try:
+        session_id = request.json.get('sessionId') if request.json else None
+        face_service.clear_session_tracking(session_id)
+        
+        message = f"Session tracking cleared for {session_id}" if session_id else "All session tracking cleared"
+        
+        return jsonify({
+            "success": True,
+            "message": message
+        }), 200
+    
+    except Exception as e:
+        logger.error(f"Error clearing session tracking: {e}")
         return jsonify({
             "success": False,
             "error": str(e)

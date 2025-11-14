@@ -1,9 +1,13 @@
 /**
  * useAttendance Hook
  * Attendance-specific business logic and state management
+ * 
+ * ANTI-LOOP FEATURES:
+ * - Request throttling: Prevents recognition calls more frequent than RECOGNITION_THROTTLE_MS
+ * - Last recognition timestamp tracking
  */
 
-import { useState, useCallback, useEffect } from 'react';
+import { useState, useCallback, useEffect, useRef } from 'react';
 import { attendanceApi } from '@api/attendance.api';
 import { useApi } from './useApi';
 import type {
@@ -17,6 +21,9 @@ interface UseAttendanceOptions {
     sessionId?: string;
     autoRefreshInterval?: number; // milliseconds
 }
+
+// Throttle configuration - minimum time between recognition requests (milliseconds)
+const RECOGNITION_THROTTLE_MS = 2000; // 2 seconds between API calls
 
 interface UseAttendanceReturn {
     // Session state
@@ -57,6 +64,9 @@ export function useAttendance(options: UseAttendanceOptions = {}): UseAttendance
     const [sessions, setSessions] = useState<AttendanceSession[]>([]);
     const [selectedSession, setSelectedSession] = useState<AttendanceSession | null>(null);
     const [sessionDetails, setSessionDetails] = useState<SessionDetailsDto | null>(null);
+
+    // ANTI-LOOP: Throttling - Track last recognition request timestamp
+    const lastRecognitionTime = useRef<number>(0);
 
     // API hooks
     const {
@@ -118,23 +128,57 @@ export function useAttendance(options: UseAttendanceOptions = {}): UseAttendance
 
     /**
      * Recognize face and mark attendance
+     * 
+     * ANTI-LOOP: Implements request throttling
+     * - Checks elapsed time since last recognition request
+     * - Rejects requests that come too quickly (within RECOGNITION_THROTTLE_MS)
+     * - This prevents API spam from rapid detection loops
      */
     const recognizeFace = useCallback(async (imageFile: File): Promise<RecognizedStudentDto[]> => {
         if (!selectedSession) {
             throw new Error('No session selected');
         }
 
+        // ANTI-LOOP: Check throttle - prevent requests closer than RECOGNITION_THROTTLE_MS
+        const now = Date.now();
+        const timeSinceLastRecognition = now - lastRecognitionTime.current;
+
+        if (timeSinceLastRecognition < RECOGNITION_THROTTLE_MS) {
+            const waitTime = ((RECOGNITION_THROTTLE_MS - timeSinceLastRecognition) / 1000).toFixed(1);
+            console.warn(
+                `[Attendance] ⚠️ Recognition request throttled. Wait ${waitTime}s more. ` +
+                `(Throttle: ${RECOGNITION_THROTTLE_MS}ms, Last call: ${timeSinceLastRecognition}ms ago)`
+            );
+
+            // Return empty array instead of throwing - prevents error spam in console
+            return [];
+        }
+
+        // Update last recognition timestamp
+        lastRecognitionTime.current = now;
+
         try {
+            console.log('[Attendance] 🔄 Sending recognition request...');
             const response = await executeRecognize(selectedSession.sessionId, imageFile);
 
-            // Refresh details after recognition
-            if (response.success && response.recognizedStudents.length > 0) {
+            // Check if API request was successful
+            if (!response.success) {
+                console.warn('[Attendance] ⚠️ Recognition API returned failure:', response.message);
+                // Return empty array - don't throw error to avoid breaking UI flow
+                return [];
+            }
+
+            // Refresh details after successful recognition
+            if (response.recognizedStudents.length > 0) {
+                console.log(`[Attendance] ✅ Recognized ${response.recognizedStudents.length} student(s), refreshing details...`);
                 await executeFetchDetails(selectedSession.sessionId);
+            } else {
+                console.log('[Attendance] 🔍 No students recognized in this capture');
             }
 
             return response.recognizedStudents;
         } catch (error) {
-            console.error('[Attendance] Recognition failed:', error);
+            console.error('[Attendance] ❌ Recognition failed with error:', error);
             throw error;
         }
     }, [selectedSession, executeRecognize, executeFetchDetails]);
